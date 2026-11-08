@@ -1,0 +1,6 @@
+{
+  "name": "VISION CARE — Optical Atelier & Prescription Eyewear",
+  "description": "Premium online optical store for prescription glasses, AI-assisted prescription OCR verification, Varilux & protective lenses, and designer frames.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
