@@ -2,8 +2,8 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import * as dotenv from 'dotenv';
-import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
-import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import { GoogleGenAI, Type, type GenerateContentResponse } from '@google/genai';
+import { requireAuth, type AuthRequest } from './src/middleware/auth.ts';
 import {
   getOrCreateUser,
   updateUserProfile,
@@ -810,11 +810,13 @@ ${catalogSummary}`,
 
   app.post('/api/admin/products', requireAuth, async (req: AuthRequest, res) => {
     try {
-      const saved = await upsertProduct(req.body);
+      const saved = await upsertProduct(req.body || {});
       res.json(saved);
     } catch (error: any) {
       console.error('Error saving product:', error);
-      res.status(500).json({ error: error.message || 'Failed to save product' });
+      const msg = error?.message || 'Failed to save product';
+      const status = msg.startsWith('Validation Error:') ? 400 : 500;
+      res.status(status).json({ error: msg });
     }
   });
 

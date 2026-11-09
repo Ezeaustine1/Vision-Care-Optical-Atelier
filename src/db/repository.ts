@@ -20,11 +20,11 @@ import { eq, desc, and } from 'drizzle-orm';
 import { resolveAutomatedStageNotification } from '../lib/orderNotifications.ts';
 import {
   dispatchClientEmail,
-  OutboundEmailResult,
-  OutboundEmailPayload,
+  type OutboundEmailResult,
+  type OutboundEmailPayload,
   buildOrderTrackingUrl,
 } from '../lib/emailService.ts';
-import { ClinicalAppointmentRecord } from '../types.ts';
+import type { ClinicalAppointmentRecord } from '../types.ts';
 
 async function loadSiteConfigObject(): Promise<Record<string, any>> {
   try {
@@ -1596,26 +1596,131 @@ export async function triggerWishlistPriceDropAlert(
 }
 
 export async function upsertProduct(
-  data: Partial<typeof products.$inferInsert> & { id?: number; triggerPriceDropAlert?: boolean }
+  data: Partial<typeof products.$inferInsert> & {
+    id?: number;
+    triggerPriceDropAlert?: boolean;
+    imageUrl?: string;
+    images?: string[];
+    colors?: string[];
+    colorsCsv?: string;
+  }
 ) {
   try {
-    const { triggerPriceDropAlert, ...cleanData } = data;
+    const {
+      triggerPriceDropAlert,
+      imageUrl,
+      images,
+      colors,
+      colorsCsv,
+      ...cleanData
+    } = data;
+
+    // Normalize imagesJson if provided via imagesJson, images, or imageUrl
+    const resolveImagesJson = (fallback?: string): string | undefined => {
+      if (cleanData.imagesJson !== undefined) {
+        if (Array.isArray(cleanData.imagesJson)) {
+          return JSON.stringify((cleanData.imagesJson as string[]).filter(Boolean));
+        }
+        const raw = String(cleanData.imagesJson).trim();
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return JSON.stringify(parsed);
+          }
+        } catch {
+          if (raw) return JSON.stringify([raw]);
+        }
+      }
+      if (Array.isArray(images) && images.length > 0) {
+        return JSON.stringify(images.filter(Boolean));
+      }
+      if (imageUrl && String(imageUrl).trim()) {
+        return JSON.stringify([String(imageUrl).trim()]);
+      }
+      return fallback;
+    };
+
+    // Normalize colorsJson if provided via colorsJson, colors, or colorsCsv
+    const resolveColorsJson = (fallback?: string): string | undefined => {
+      if (cleanData.colorsJson !== undefined) {
+        if (Array.isArray(cleanData.colorsJson)) {
+          return JSON.stringify((cleanData.colorsJson as string[]).filter(Boolean));
+        }
+        const raw = String(cleanData.colorsJson).trim();
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return JSON.stringify(parsed);
+          }
+        } catch {
+          if (raw) {
+            return JSON.stringify(
+              raw
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            );
+          }
+        }
+      }
+      if (Array.isArray(colors) && colors.length > 0) {
+        return JSON.stringify(colors.filter(Boolean));
+      }
+      if (colorsCsv && String(colorsCsv).trim()) {
+        const parts = String(colorsCsv)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (parts.length > 0) return JSON.stringify(parts);
+      }
+      return fallback;
+    };
+
     if (cleanData.id) {
       const { id, ...rest } = cleanData;
-      const existingRows = await db.select().from(products).where(eq(products.id, id));
+      const existingRows = await db.select().from(products).where(eq(products.id, Number(id)));
       const existing = existingRows[0];
-      const previousEffectivePrice = existing ? existing.discountPriceNgn || existing.priceNgn : undefined;
+      if (!existing) {
+        throw new Error(`Frame with ID #${id} was not found in the database.`);
+      }
+      const previousEffectivePrice = existing.discountPriceNgn || existing.priceNgn;
 
-      const res = await db.update(products).set(rest).where(eq(products.id, id)).returning();
+      const updatePatch: Record<string, any> = { ...rest };
+      const normalizedImages = resolveImagesJson();
+      if (normalizedImages !== undefined) {
+        updatePatch.imagesJson = normalizedImages;
+      }
+      const normalizedColors = resolveColorsJson();
+      if (normalizedColors !== undefined) {
+        updatePatch.colorsJson = normalizedColors;
+      }
+      if (updatePatch.priceNgn !== undefined) {
+        updatePatch.priceNgn = Math.max(0, Number(updatePatch.priceNgn) || 0);
+      }
+      if (updatePatch.stockQuantity !== undefined) {
+        updatePatch.stockQuantity = Math.max(0, Number(updatePatch.stockQuantity) || 0);
+      }
+      if ('discountPriceNgn' in updatePatch) {
+        updatePatch.discountPriceNgn =
+          updatePatch.discountPriceNgn === null ||
+          updatePatch.discountPriceNgn === '' ||
+          Number(updatePatch.discountPriceNgn) <= 0
+            ? null
+            : Number(updatePatch.discountPriceNgn);
+      }
+
+      const res = await db
+        .update(products)
+        .set(updatePatch)
+        .where(eq(products.id, Number(id)))
+        .returning();
       const updated = res[0];
 
       if (
         updated &&
         updated.discountPriceNgn &&
         updated.discountPriceNgn > 0 &&
-        (triggerPriceDropAlert ||
-          !existing ||
-          updated.discountPriceNgn !== existing.discountPriceNgn)
+        (triggerPriceDropAlert || updated.discountPriceNgn !== existing.discountPriceNgn)
       ) {
         await dispatchWishlistPriceDropNotifications(
           updated,
@@ -1626,12 +1731,84 @@ export async function upsertProduct(
 
       return updated;
     } else {
-      const res = await db.insert(products).values(cleanData as typeof products.$inferInsert).returning();
+      const frameName = String(cleanData.name || '').trim();
+      const frameBrand = String(cleanData.brand || 'VISION CARE ATELIER').trim();
+      const framePrice = Number(cleanData.priceNgn ?? 0);
+      const frameStock = Number(cleanData.stockQuantity ?? 20);
+
+      if (!frameName) {
+        throw new Error('Validation Error: Frame Name is required before publishing to the storefront.');
+      }
+      if (!frameBrand) {
+        throw new Error('Validation Error: Frame Brand is required.');
+      }
+      if (Number.isNaN(framePrice) || framePrice <= 0) {
+        throw new Error('Validation Error: Frame Price (NGN) must be greater than ₦0.');
+      }
+      if (Number.isNaN(frameStock) || frameStock < 0) {
+        throw new Error('Validation Error: Stock Quantity cannot be negative.');
+      }
+
+      let targetSku =
+        String(cleanData.sku || '').trim() ||
+        `VC-FRM-${Math.floor(100 + Math.random() * 900)}`;
+
+      // Ensure unique SKU to prevent database unique constraint failures
+      const existingBySku = await db
+        .select()
+        .from(products)
+        .where(eq(products.sku, targetSku));
+      if (existingBySku.length > 0) {
+        targetSku = `${targetSku}-${Math.floor(100 + Math.random() * 900)}`;
+      }
+
+      const insertPayload: typeof products.$inferInsert = {
+        sku: targetSku,
+        name: frameName,
+        brand: frameBrand,
+        category: String(cleanData.category || 'Unisex').trim() || 'Unisex',
+        gender: String(cleanData.gender || 'Unisex').trim() || 'Unisex',
+        shape: String(cleanData.shape || 'Round').trim() || 'Round',
+        rimStyle: String(cleanData.rimStyle || 'Full-Rim').trim() || 'Full-Rim',
+        material: String(cleanData.material || 'Italian Acetate').trim() || 'Italian Acetate',
+        dimensions: String(cleanData.dimensions || '51-19-145 mm').trim() || '51-19-145 mm',
+        priceNgn: Math.round(framePrice),
+        discountPriceNgn:
+          cleanData.discountPriceNgn && Number(cleanData.discountPriceNgn) > 0
+            ? Math.round(Number(cleanData.discountPriceNgn))
+            : null,
+        colorsJson:
+          resolveColorsJson(JSON.stringify(['Obsidian Black', 'Tortoise'])) ||
+          JSON.stringify(['Obsidian Black', 'Tortoise']),
+        imagesJson:
+          resolveImagesJson(
+            JSON.stringify(['/src/assets/images/frame_round_navy_1793890600366.jpg'])
+          ) || JSON.stringify(['/src/assets/images/frame_round_navy_1793890600366.jpg']),
+        stockQuantity: Math.round(frameStock),
+        isProtectiveReady: Boolean(cleanData.isProtectiveReady ?? true),
+        defaultProtectiveType:
+          String(cleanData.defaultProtectiveType || 'Blue Cut Glasses').trim() ||
+          'Blue Cut Glasses',
+        isFeatured: Boolean(cleanData.isFeatured ?? true),
+        isBestSeller: Boolean(cleanData.isBestSeller ?? false),
+        isNewArrival: Boolean(cleanData.isNewArrival ?? true),
+        isActive: Boolean(cleanData.isActive ?? true),
+        description:
+          String(cleanData.description || '').trim() ||
+          `${frameName} precision optical frame crafted in ${
+            cleanData.material || 'Italian Acetate'
+          } by ${frameBrand}.`,
+      };
+
+      const res = await db.insert(products).values(insertPayload).returning();
       return res[0];
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('Database query failed in upsertProduct:', error);
-    throw new Error('Failed to save product.', { cause: error });
+    const detail = error instanceof Error ? error.message : 'Database error';
+    throw new Error(detail.startsWith('Validation Error:') ? detail : `Failed to save product: ${detail}`, {
+      cause: error,
+    });
   }
 }
 

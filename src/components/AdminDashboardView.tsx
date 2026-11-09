@@ -133,6 +133,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     imageUrl: '/src/assets/images/frame_round_navy_1793890600366.jpg',
     colorsCsv: 'Deep Navy, Champagne Gold, Tortoise',
   });
+  const [isCreatingProduct, setIsCreatingProduct] = useState(false);
+  const [isUploadingFrameImage, setIsUploadingFrameImage] = useState(false);
+  const [productActionFeedback, setProductActionFeedback] = useState<string>('');
+  const [productActionFeedbackType, setProductActionFeedbackType] = useState<'success' | 'error'>('success');
+  const [frameImageDraftMap, setFrameImageDraftMap] = useState<Record<number, string>>({});
+  const [savingFrameId, setSavingFrameId] = useState<number | null>(null);
 
   // New Lens Type Form
   const [newLens, setNewLens] = useState({
@@ -204,7 +210,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [rxPage, setRxPage] = useState<number>(1);
   const [expandedRxIds, setExpandedRxIds] = useState<Record<number, boolean>>({});
 
-  const [productsSubTab, setProductsSubTab] = useState<'catalog' | 'add_frame' | 'all'>('catalog');
+  const [productsSubTab, setProductsSubTab] = useState<'catalog' | 'add_frame' | 'all'>('all');
   const [productSearch, setProductSearch] = useState('');
   const [productFilter, setProductFilter] = useState<'ALL' | 'LOW_STOCK' | 'DISCOUNTED' | 'AI_GLASSES'>('ALL');
   const [productPage, setProductPage] = useState<number>(1);
@@ -227,11 +233,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   >('headlines_banner');
 
   const fetchAdminData = async () => {
-    if (!idToken) return;
     setLoading(true);
     try {
       const res = await fetch('/api/admin/overview', {
-        headers: { Authorization: `Bearer ${idToken}` },
+        headers: {
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
       });
       if (res.ok) {
         const data = await res.json();
@@ -312,12 +319,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   };
 
   const handleUpdateOrder = async (orderId: number, updates: any) => {
-    if (!idToken) return;
     await fetch(`/api/admin/orders/${orderId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       },
       body: JSON.stringify(updates),
     });
@@ -552,12 +558,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   };
 
   const handleUpdatePrescription = async (rxId: number, updates: any) => {
-    if (!idToken) return;
     await fetch(`/api/admin/prescriptions/${rxId}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       },
       body: JSON.stringify(updates),
     });
@@ -565,50 +570,290 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     await fetchAdminData();
   };
 
+  const readOptimizedFrameImageDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.onload = () => {
+        const rawDataUrl = String(reader.result || '');
+        const img = new window.Image();
+        img.onerror = () => resolve(rawDataUrl);
+        img.onload = () => {
+          try {
+            const maxDim = 1200;
+            let width = img.width;
+            let height = img.height;
+            if (width > maxDim || height > maxDim) {
+              if (width >= height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              resolve(rawDataUrl);
+              return;
+            }
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.86));
+          } catch {
+            resolve(rawDataUrl);
+          }
+        };
+        img.src = rawDataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const showProductFeedback = (message: string, type: 'success' | 'error' = 'success') => {
+    setProductActionFeedbackType(type);
+    setProductActionFeedback(message);
+    if (type === 'success') {
+      setStatusMessage(message);
+    }
+  };
+
+  const parseProductApiResponse = async (res: Response): Promise<any> => {
+    const rawText = await res.text();
+    let parsed: any = null;
+    if (rawText && rawText.trim() !== '') {
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        throw new Error(
+          `Backend returned an unexpected non-JSON response (HTTP ${res.status}). Please verify /api/index.php and MySQL database settings.`
+        );
+      }
+    }
+    if (!res.ok) {
+      const serverErr =
+        parsed?.error ||
+        parsed?.message ||
+        `Request failed with HTTP ${res.status}. Please check your database connection and form fields.`;
+      throw new Error(String(serverErr));
+    }
+    return parsed;
+  };
+
+  const handleUploadNewFrameImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showProductFeedback('Validation Error: Please select a valid image file (JPG, PNG, or WEBP).', 'error');
+      e.target.value = '';
+      return;
+    }
+    setIsUploadingFrameImage(true);
+    try {
+      const dataUrl = await readOptimizedFrameImageDataUrl(file);
+      setNewProd((prev) => ({ ...prev, imageUrl: dataUrl }));
+      showProductFeedback(`Frame image "${file.name}" loaded and optimized. Click "Publish Frame to Storefront" below to save.`, 'success');
+    } catch (err: any) {
+      showProductFeedback(
+        err?.message || 'Could not load the selected image file. Please try another photo.',
+        'error'
+      );
+    } finally {
+      setIsUploadingFrameImage(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleUploadExistingFrameImage = async (
+    prod: Product,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showProductFeedback('Validation Error: Please select a valid image file (JPG, PNG, or WEBP).', 'error');
+      e.target.value = '';
+      return;
+    }
+    setSavingFrameId(prod.id);
+    try {
+      const dataUrl = await readOptimizedFrameImageDataUrl(file);
+      setFrameImageDraftMap((prev) => ({ ...prev, [prod.id]: dataUrl }));
+      const res = await fetch('/api/admin/products', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+        body: JSON.stringify({
+          id: prod.id,
+          name: prod.name,
+          brand: prod.brand,
+          category: prod.category,
+          gender: prod.gender,
+          shape: prod.shape,
+          rimStyle: prod.rimStyle,
+          material: prod.material,
+          dimensions: prod.dimensions,
+          priceNgn: prod.priceNgn,
+          discountPriceNgn: prod.discountPriceNgn,
+          stockQuantity: prod.stockQuantity,
+          description: prod.description,
+          imagesJson: JSON.stringify([dataUrl]),
+          imageUrl: dataUrl,
+        }),
+      });
+      const savedProd = await parseProductApiResponse(res);
+      if (savedProd && savedProd.id) {
+        setProducts((prev) => prev.map((p) => (p.id === prod.id ? savedProd : p)));
+      }
+      showProductFeedback(`Updated storefront photo for "${prod.name}".`, 'success');
+      await fetchAdminData();
+      await onRefreshPublicCatalog();
+    } catch (err: any) {
+      showProductFeedback(
+        err?.message || `Failed to update photo for "${prod.name}".`,
+        'error'
+      );
+    } finally {
+      setSavingFrameId(null);
+      e.target.value = '';
+    }
+  };
+
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!idToken) return;
-    await fetch('/api/admin/products', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${idToken}`,
-      },
-      body: JSON.stringify({
-        sku: newProd.sku,
-        name: newProd.name,
-        brand: newProd.brand,
-        category: newProd.category,
-        gender: newProd.gender,
-        shape: newProd.shape,
-        rimStyle: newProd.rimStyle,
-        material: newProd.material,
-        dimensions: newProd.dimensions,
-        priceNgn: Number(newProd.priceNgn),
-        stockQuantity: Number(newProd.stockQuantity),
-        description: newProd.description,
-        colorsJson: JSON.stringify(newProd.colorsCsv.split(',').map((s) => s.trim())),
-        imagesJson: JSON.stringify([newProd.imageUrl]),
-        isFeatured: true,
-        isBestSeller: false,
-        isNewArrival: true,
-        isActive: true,
-      }),
-    });
-    setStatusMessage('New frame added to catalog.');
-    setNewProd({ ...newProd, sku: `VC-NEW-${Math.floor(100 + Math.random() * 900)}`, name: '', description: '' });
-    await fetchAdminData();
-    await onRefreshPublicCatalog();
+    const cleanName = newProd.name.trim();
+    const cleanBrand = newProd.brand.trim();
+    const numericPrice = Number(newProd.priceNgn);
+    const numericStock = Number(newProd.stockQuantity);
+    const cleanImageUrl =
+      (newProd.imageUrl || '').trim() ||
+      '/src/assets/images/frame_round_navy_1793890600366.jpg';
+
+    // Explicit Client-Side Validation before calling the API
+    if (!cleanName) {
+      showProductFeedback('Validation Error: Please enter a Frame Name before publishing.', 'error');
+      return;
+    }
+    if (!cleanBrand) {
+      showProductFeedback('Validation Error: Please enter a Frame Brand.', 'error');
+      return;
+    }
+    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+      showProductFeedback('Validation Error: Frame Price (NGN) must be greater than ₦0.', 'error');
+      return;
+    }
+    if (Number.isNaN(numericStock) || numericStock < 0) {
+      showProductFeedback('Validation Error: Stock Quantity must be 0 or greater.', 'error');
+      return;
+    }
+    if (!cleanImageUrl) {
+      showProductFeedback('Validation Error: Please upload a frame image or provide a valid image URL.', 'error');
+      return;
+    }
+
+    setIsCreatingProduct(true);
+    try {
+      const parsedColors = (newProd.colorsCsv || 'Obsidian Black')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const uniqueSku =
+        newProd.sku.trim() || `VC-NEW-${Math.floor(100 + Math.random() * 900)}`;
+
+      const res = await fetch('/api/admin/products', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+        body: JSON.stringify({
+          sku: uniqueSku,
+          name: cleanName,
+          brand: cleanBrand,
+          category: newProd.category || 'Unisex',
+          gender: newProd.gender || 'Unisex',
+          shape: newProd.shape || 'Round',
+          rimStyle: newProd.rimStyle || 'Full-Rim',
+          material: newProd.material || 'Italian Acetate',
+          dimensions: newProd.dimensions || '51-19-145 mm',
+          priceNgn: Math.round(numericPrice),
+          stockQuantity: Math.round(numericStock),
+          description:
+            newProd.description.trim() ||
+            `${cleanName} precision optical frame crafted in ${newProd.material || 'Italian Acetate'} by ${cleanBrand}.`,
+          colorsJson: JSON.stringify(parsedColors.length > 0 ? parsedColors : ['Obsidian Black']),
+          colorsCsv: newProd.colorsCsv,
+          imagesJson: JSON.stringify([cleanImageUrl]),
+          imageUrl: cleanImageUrl,
+          isFeatured: true,
+          isBestSeller: false,
+          isNewArrival: true,
+          isActive: true,
+        }),
+      });
+
+      const savedFrame = await parseProductApiResponse(res);
+      if (!savedFrame || !savedFrame.id) {
+        throw new Error('Backend did not return a saved product record. Please check database permissions.');
+      }
+
+      // Immediately reflect in local Admin state and refresh public storefront
+      setProducts((prev) => [
+        savedFrame,
+        ...prev.filter((p) => p.id !== savedFrame.id),
+      ]);
+
+      showProductFeedback(
+        `"${savedFrame.name || cleanName}" (SKU: ${savedFrame.sku || uniqueSku}) has been saved to the database and published live to the Storefront!`,
+        'success'
+      );
+
+      setNewProd({
+        ...newProd,
+        sku: `VC-NEW-${Math.floor(100 + Math.random() * 900)}`,
+        name: '',
+        description: '',
+      });
+      setProductFilter('ALL');
+      setProductSearch('');
+      setProductPage(1);
+      await fetchAdminData();
+      await onRefreshPublicCatalog();
+    } catch (err: any) {
+      showProductFeedback(
+        err?.message || 'Unable to publish frame to storefront. Please check your network and database settings.',
+        'error'
+      );
+    } finally {
+      setIsCreatingProduct(false);
+    }
   };
 
   const handleDeleteProduct = async (id: number) => {
-    if (!idToken) return;
-    await fetch(`/api/admin/products/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${idToken}` },
-    });
-    await fetchAdminData();
-    await onRefreshPublicCatalog();
+    try {
+      const res = await fetch(`/api/admin/products/${id}`, {
+        method: 'DELETE',
+        headers: {
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
+      });
+      await parseProductApiResponse(res);
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      showProductFeedback('Frame removed from storefront catalog.', 'success');
+      await fetchAdminData();
+      await onRefreshPublicCatalog();
+    } catch (err: any) {
+      showProductFeedback(
+        err?.message || 'Failed to delete frame from database.',
+        'error'
+      );
+    }
   };
 
   const filteredOrders = orders.filter((o) => {
@@ -2898,15 +3143,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       </div>
                     </div>
 
-                    {priceDropFeedback && (
-                      <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-medium flex items-center justify-between gap-2">
+                    {(priceDropFeedback || productActionFeedback) && (
+                      <div
+                        className={`p-3.5 rounded-xl border text-xs font-medium flex items-center justify-between gap-2 ${
+                          !priceDropFeedback && productActionFeedbackType === 'error'
+                            ? 'bg-red-50 border-red-300 text-red-900'
+                            : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                        }`}
+                      >
                         <div className="flex items-center gap-2">
-                          <Check className="w-4 h-4 text-emerald-700 shrink-0" />
-                          <span>{priceDropFeedback}</span>
+                          {!priceDropFeedback && productActionFeedbackType === 'error' ? (
+                            <ShieldAlert className="w-4 h-4 text-red-600 shrink-0" />
+                          ) : (
+                            <Check className="w-4 h-4 text-emerald-700 shrink-0" />
+                          )}
+                          <span>{priceDropFeedback || productActionFeedback}</span>
                         </div>
                         <button
                           type="button"
-                          onClick={() => setPriceDropFeedback('')}
+                          onClick={() => {
+                            setPriceDropFeedback('');
+                            setProductActionFeedback('');
+                          }}
                           className="text-[11px] font-semibold underline cursor-pointer"
                         >
                           Dismiss
@@ -2919,6 +3177,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         prod.discountPriceNgn && prod.discountPriceNgn > 0 && prod.discountPriceNgn < prod.priceNgn
                       );
                       const isProdExpanded = Boolean(expandedProductIds[prod.id]);
+                      let parsedPrimaryImg = '';
+                      try {
+                        const arr = JSON.parse(prod.imagesJson || '[]');
+                        if (Array.isArray(arr) && arr.length > 0) {
+                          parsedPrimaryImg = String(arr[0] || '');
+                        }
+                      } catch {
+                        parsedPrimaryImg = '';
+                      }
+                      const currentThumb =
+                        frameImageDraftMap[prod.id] ||
+                        parsedPrimaryImg ||
+                        '/src/assets/images/frame_round_navy_1793890600366.jpg';
                       return (
                         <div
                           key={prod.id}
@@ -2932,48 +3203,79 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   [prod.id]: !prev[prod.id],
                                 }))
                               }
-                              className="cursor-pointer"
+                              className="cursor-pointer flex items-center gap-3.5"
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-slate-400 font-tabular">{prod.sku}</span>
-                                {hasDiscount && (
-                                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold uppercase">
-                                    Discount Active: {formatNaira(prod.discountPriceNgn!)}
-                                  </span>
-                                )}
+                              <div className="w-16 h-14 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden shrink-0 flex items-center justify-center">
+                                <img
+                                  src={currentThumb}
+                                  alt={prod.name}
+                                  className="w-full h-full object-cover"
+                                />
                               </div>
-                              <h4 className="text-sm font-semibold text-[#0B192C] mt-0.5">
-                                {prod.name} —{' '}
-                                <span className="font-tabular text-[#1E40AF]">
-                                  {formatNaira(prod.discountPriceNgn || prod.priceNgn)}
-                                </span>
-                                {hasDiscount && (
-                                  <span className="text-xs text-slate-400 line-through font-tabular ml-2">
-                                    {formatNaira(prod.priceNgn)}
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs text-slate-400 font-tabular">{prod.sku}</span>
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
+                                    {prod.category}
                                   </span>
-                                )}
-                              </h4>
-                              <p className="text-xs text-slate-500">
-                                {prod.brand} · {prod.shape} · {prod.material} · Stock: {prod.stockQuantity}
-                              </p>
+                                  {hasDiscount && (
+                                    <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold uppercase">
+                                      Discount Active: {formatNaira(prod.discountPriceNgn!)}
+                                    </span>
+                                  )}
+                                </div>
+                                <h4 className="text-sm font-semibold text-[#0B192C] mt-0.5">
+                                  {prod.name} —{' '}
+                                  <span className="font-tabular text-[#1E40AF]">
+                                    {formatNaira(prod.discountPriceNgn || prod.priceNgn)}
+                                  </span>
+                                  {hasDiscount && (
+                                    <span className="text-xs text-slate-400 line-through font-tabular ml-2">
+                                      {formatNaira(prod.priceNgn)}
+                                    </span>
+                                  )}
+                                </h4>
+                                <p className="text-xs text-slate-500">
+                                  {prod.brand} · {prod.shape} · {prod.material} · Stock: {prod.stockQuantity}
+                                </p>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 self-start sm:self-auto">
+                            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                              <label className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#1E40AF] border border-blue-200 text-xs font-semibold rounded-lg cursor-pointer inline-flex items-center gap-1.5">
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>{savingFrameId === prod.id ? 'Uploading...' : 'Change Photo'}</span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => handleUploadExistingFrameImage(prod, e)}
+                                  className="hidden"
+                                />
+                              </label>
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  await fetch('/api/admin/products', {
-                                    method: 'POST',
-                                    headers: {
-                                      'Content-Type': 'application/json',
-                                      Authorization: `Bearer ${idToken}`,
-                                    },
-                                    body: JSON.stringify({
-                                      id: prod.id,
-                                      stockQuantity: prod.stockQuantity + 10,
-                                    }),
-                                  });
-                                  fetchAdminData();
-                                  await onRefreshPublicCatalog();
+                                  try {
+                                    const res = await fetch('/api/admin/products', {
+                                      method: 'POST',
+                                      headers: {
+                                        'Content-Type': 'application/json',
+                                        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                      },
+                                      body: JSON.stringify({
+                                        id: prod.id,
+                                        stockQuantity: prod.stockQuantity + 10,
+                                      }),
+                                    });
+                                    await parseProductApiResponse(res);
+                                    showProductFeedback(`Added +10 stock to "${prod.name}".`, 'success');
+                                    await fetchAdminData();
+                                    await onRefreshPublicCatalog();
+                                  } catch (err: any) {
+                                    showProductFeedback(
+                                      err?.message || 'Failed to update stock quantity.',
+                                      'error'
+                                    );
+                                  }
                                 }}
                                 className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-xs font-medium rounded-lg cursor-pointer"
                               >
@@ -2989,7 +3291,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 }
                                 className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-xs font-semibold rounded-lg cursor-pointer"
                               >
-                                {isProdExpanded ? 'Hide Price Editor ▲' : 'Edit Price ▼'}
+                                {isProdExpanded ? 'Hide Editor ▲' : 'Edit Price & Image ▼'}
                               </button>
                               <button
                                 type="button"
@@ -3001,98 +3303,177 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             </div>
                           </div>
 
-                          {/* Editable Regular Price, Discount Price (discountPriceNgn) & Wishlist Price-Drop Alert Trigger */}
+                          {/* Editable Regular Price, Discount Price (discountPriceNgn), Image URL & Wishlist Price-Drop Alert Trigger */}
                           {isProdExpanded && (
-                            <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end bg-slate-50/80 p-3 rounded-xl">
-                              <div className="sm:col-span-3">
-                                <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
-                                  Regular Price (₦)
-                                </label>
-                                <input
-                                  type="number"
-                                  value={prod.priceNgn}
-                                  onChange={(e) => {
-                                    const val = Math.max(0, Number(e.target.value) || 0);
-                                    setProducts((prev) =>
-                                      prev.map((p) => (p.id === prod.id ? { ...p, priceNgn: val } : p))
-                                    );
-                                  }}
-                                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-tabular bg-white"
-                                />
-                              </div>
-
-                              <div className="sm:col-span-4">
-                                <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#1E40AF] mb-1">
-                                  Discount Price (`discountPriceNgn` ₦)
-                                </label>
-                                <input
-                                  type="number"
-                                  placeholder="e.g. 75000 (0 to clear)"
-                                  value={prod.discountPriceNgn ?? ''}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    const val = raw === '' ? null : Math.max(0, Number(raw) || 0);
-                                    setProducts((prev) =>
-                                      prev.map((p) =>
-                                        p.id === prod.id ? { ...p, discountPriceNgn: val } : p
-                                      )
-                                    );
-                                  }}
-                                  className="w-full border border-[#1E40AF]/40 focus:border-[#1E40AF] rounded-lg px-2.5 py-1.5 text-xs font-tabular bg-white font-semibold text-[#0B192C]"
-                                />
-                              </div>
-
-                              <div className="sm:col-span-5">
-                                <button
-                                  type="button"
-                                  disabled={triggeringPriceDropId === prod.id}
-                                  onClick={async () => {
-                                    if (!idToken) return;
-                                    setTriggeringPriceDropId(prod.id);
-                                    try {
-                                      const effectiveDiscount =
-                                        prod.discountPriceNgn && prod.discountPriceNgn > 0
-                                          ? prod.discountPriceNgn
-                                          : Math.round(prod.priceNgn * 0.85);
-                                      const res = await fetch(
-                                        `/api/admin/products/${prod.id}/price-drop-alert`,
-                                        {
-                                          method: 'POST',
-                                          headers: {
-                                            'Content-Type': 'application/json',
-                                            Authorization: `Bearer ${idToken}`,
-                                          },
-                                          body: JSON.stringify({
-                                            priceNgn: prod.priceNgn,
-                                            discountPriceNgn: effectiveDiscount,
-                                          }),
-                                        }
+                            <div className="pt-3 border-t border-slate-100 space-y-3 bg-slate-50/80 p-3 rounded-xl">
+                              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                                <div className="sm:col-span-3">
+                                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                                    Regular Price (₦)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={prod.priceNgn}
+                                    onChange={(e) => {
+                                      const val = Math.max(0, Number(e.target.value) || 0);
+                                      setProducts((prev) =>
+                                        prev.map((p) => (p.id === prod.id ? { ...p, priceNgn: val } : p))
                                       );
-                                      if (res.ok) {
-                                        const data = await res.json();
+                                    }}
+                                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-tabular bg-white"
+                                  />
+                                </div>
+
+                                <div className="sm:col-span-4">
+                                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#1E40AF] mb-1">
+                                    Discount Price (`discountPriceNgn` ₦)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    placeholder="e.g. 75000 (0 to clear)"
+                                    value={prod.discountPriceNgn ?? ''}
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      const val = raw === '' ? null : Math.max(0, Number(raw) || 0);
+                                      setProducts((prev) =>
+                                        prev.map((p) =>
+                                          p.id === prod.id ? { ...p, discountPriceNgn: val } : p
+                                        )
+                                      );
+                                    }}
+                                    className="w-full border border-[#1E40AF]/40 focus:border-[#1E40AF] rounded-lg px-2.5 py-1.5 text-xs font-tabular bg-white font-semibold text-[#0B192C]"
+                                  />
+                                </div>
+
+                                <div className="sm:col-span-5">
+                                  <button
+                                    type="button"
+                                    disabled={triggeringPriceDropId === prod.id}
+                                    onClick={async () => {
+                                      setTriggeringPriceDropId(prod.id);
+                                      try {
+                                        const effectiveDiscount =
+                                          prod.discountPriceNgn && prod.discountPriceNgn > 0
+                                            ? prod.discountPriceNgn
+                                            : Math.round(prod.priceNgn * 0.85);
+                                        const res = await fetch(
+                                          `/api/admin/products/${prod.id}/price-drop-alert`,
+                                          {
+                                            method: 'POST',
+                                            headers: {
+                                              'Content-Type': 'application/json',
+                                              ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                            },
+                                            body: JSON.stringify({
+                                              priceNgn: prod.priceNgn,
+                                              discountPriceNgn: effectiveDiscount,
+                                            }),
+                                          }
+                                        );
+                                        const data = await parseProductApiResponse(res);
                                         const msg = `Updated "${prod.name}" discountPriceNgn to ${formatNaira(
                                           effectiveDiscount
                                         )} & dispatched real-time Wishlist Price-Drop Alert to ${
-                                          data.notifiedCount || 1
+                                          data?.notifiedCount || 1
                                         } customer account(s).`;
                                         setPriceDropFeedback(msg);
                                         setStatusMessage(msg);
                                         await fetchAdminData();
                                         await onRefreshPublicCatalog();
+                                      } catch (err: any) {
+                                        showProductFeedback(
+                                          err?.message || 'Failed to update discount price.',
+                                          'error'
+                                        );
+                                      } finally {
+                                        setTriggeringPriceDropId(null);
                                       }
-                                    } finally {
-                                      setTriggeringPriceDropId(null);
+                                    }}
+                                    className="w-full py-2 px-3 bg-[#0B192C] hover:bg-[#162B49] disabled:opacity-60 text-white text-[11px] font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Bell className="w-3.5 h-3.5 text-[#C5A059]" />
+                                    <span>
+                                      {triggeringPriceDropId === prod.id
+                                        ? 'Sending Price-Drop Alert...'
+                                        : 'Update Discount & Trigger Wishlist Alert'}
+                                    </span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end pt-2 border-t border-slate-200/70">
+                                <div className="sm:col-span-8">
+                                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                                    Frame Image URL or Uploaded Data URL
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={frameImageDraftMap[prod.id] ?? parsedPrimaryImg}
+                                    onChange={(e) =>
+                                      setFrameImageDraftMap((prev) => ({
+                                        ...prev,
+                                        [prod.id]: e.target.value,
+                                      }))
                                     }
-                                  }}
-                                  className="w-full py-2 px-3 bg-[#0B192C] hover:bg-[#162B49] disabled:opacity-60 text-white text-[11px] font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
-                                >
-                                  <Bell className="w-3.5 h-3.5 text-[#C5A059]" />
-                                  <span>
-                                    {triggeringPriceDropId === prod.id
-                                      ? 'Sending Price-Drop Alert...'
-                                      : 'Update Discount & Trigger Wishlist Alert'}
-                                  </span>
-                                </button>
+                                    placeholder="Paste image URL or click 'Change Photo' above to upload from device..."
+                                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white"
+                                  />
+                                </div>
+                                <div className="sm:col-span-4">
+                                  <button
+                                    type="button"
+                                    disabled={savingFrameId === prod.id}
+                                    onClick={async () => {
+                                      setSavingFrameId(prod.id);
+                                      try {
+                                        const nextImg =
+                                          (frameImageDraftMap[prod.id] ?? parsedPrimaryImg).trim() ||
+                                          '/src/assets/images/frame_round_navy_1793890600366.jpg';
+                                        const res = await fetch('/api/admin/products', {
+                                          method: 'POST',
+                                          headers: {
+                                            'Content-Type': 'application/json',
+                                            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                          },
+                                          body: JSON.stringify({
+                                            id: prod.id,
+                                            name: prod.name,
+                                            brand: prod.brand,
+                                            category: prod.category,
+                                            gender: prod.gender,
+                                            shape: prod.shape,
+                                            rimStyle: prod.rimStyle,
+                                            material: prod.material,
+                                            dimensions: prod.dimensions,
+                                            priceNgn: prod.priceNgn,
+                                            discountPriceNgn: prod.discountPriceNgn,
+                                            stockQuantity: prod.stockQuantity,
+                                            description: prod.description,
+                                            imagesJson: JSON.stringify([nextImg]),
+                                            imageUrl: nextImg,
+                                          }),
+                                        });
+                                        await parseProductApiResponse(res);
+                                        showProductFeedback(
+                                          `Saved updated price & image for "${prod.name}".`,
+                                          'success'
+                                        );
+                                        await fetchAdminData();
+                                        await onRefreshPublicCatalog();
+                                      } catch (err: any) {
+                                        showProductFeedback(
+                                          err?.message || `Failed to save changes for "${prod.name}".`,
+                                          'error'
+                                        );
+                                      } finally {
+                                        setSavingFrameId(null);
+                                      }
+                                    }}
+                                    className="w-full py-2 px-3 bg-[#1E40AF] hover:bg-[#1E3A8A] disabled:opacity-60 text-white text-[11px] font-semibold rounded-lg cursor-pointer"
+                                  >
+                                    {savingFrameId === prod.id ? 'Saving...' : 'Save Frame Image & Price'}
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           )}
@@ -3131,21 +3512,142 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 {(productsSubTab === 'add_frame' || productsSubTab === 'all') && (
                   <form
                     onSubmit={handleCreateProduct}
-                    className="bg-white rounded-xl border border-slate-200 p-6 space-y-3 h-fit max-w-xl"
+                    className="bg-white rounded-xl border border-slate-200 p-6 space-y-3.5 h-fit max-w-xl shadow-2xs"
                   >
-                    <h3 className="text-base font-semibold text-[#0B192C] flex items-center gap-2">
-                      <Plus className="w-4 h-4 text-[#1E40AF]" />
-                      <span>Add New Eyewear Frame</span>
-                    </h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-base font-semibold text-[#0B192C] flex items-center gap-2">
+                        <Plus className="w-4 h-4 text-[#1E40AF]" />
+                        <span>Add New Eyewear Frame</span>
+                      </h3>
+                      <span className="text-[11px] font-tabular text-slate-400">{newProd.sku}</span>
+                    </div>
+
+                    {productActionFeedback && (
+                      <div
+                        className={`p-3 rounded-lg border text-xs font-medium flex items-start justify-between gap-2 ${
+                          productActionFeedbackType === 'error'
+                            ? 'bg-red-50 border-red-300 text-red-900'
+                            : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          {productActionFeedbackType === 'error' ? (
+                            <ShieldAlert className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                          ) : (
+                            <Check className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                          )}
+                          <span>{productActionFeedback}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setProductActionFeedback('')}
+                          className="text-[11px] font-semibold underline shrink-0 cursor-pointer"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Frame Image Upload & Live Preview Box */}
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-semibold uppercase tracking-wider text-[#0B192C] flex items-center gap-1.5">
+                          <ImageIcon className="w-3.5 h-3.5 text-[#1E40AF]" />
+                          <span>Frame Storefront Image</span>
+                        </label>
+                        <span className="text-[10px] text-slate-500">JPG, PNG, WEBP or URL</span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="w-24 h-20 rounded-lg border border-slate-300 bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                          <img
+                            src={
+                              newProd.imageUrl ||
+                              '/src/assets/images/frame_round_navy_1793890600366.jpg'
+                            }
+                            alt="Frame Preview"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="flex-1 space-y-2">
+                          <label className="w-full py-2 px-3 bg-[#1E40AF] hover:bg-[#1E3A8A] text-white text-xs font-semibold rounded-lg cursor-pointer inline-flex items-center justify-center gap-1.5">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>
+                              {isUploadingFrameImage
+                                ? 'Processing Image...'
+                                : 'Upload Frame Image from Device'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleUploadNewFrameImage}
+                              className="hidden"
+                            />
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Or paste direct image URL (https://...)"
+                            value={newProd.imageUrl}
+                            onChange={(e) => setNewProd({ ...newProd, imageUrl: e.target.value })}
+                            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-[11px] bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Quick Studio Preset Selector */}
+                      <div className="pt-1">
+                        <span className="block text-[10px] text-slate-500 mb-1">
+                          Or choose a studio optical frame preset:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            {
+                              label: 'Round Navy',
+                              url: '/src/assets/images/frame_round_navy_1793890600366.jpg',
+                            },
+                            {
+                              label: 'Cat-Eye Gold',
+                              url: '/src/assets/images/frame_cateye_gold_1793890601909.jpg',
+                            },
+                            {
+                              label: 'Square Black',
+                              url: '/src/assets/images/frame_square_black_1793890603503.jpg',
+                            },
+                            {
+                              label: 'Aviator Titanium',
+                              url: '/src/assets/images/frame_aviator_silver_1793890605078.jpg',
+                            },
+                            {
+                              label: 'AI Smart Audio',
+                              url: '/src/assets/images/frame_ai_audio_matte_1793890606480.jpg',
+                            },
+                          ].map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => setNewProd({ ...newProd, imageUrl: preset.url })}
+                              className={`px-2 py-1 rounded text-[10px] font-semibold cursor-pointer border ${
+                                newProd.imageUrl === preset.url
+                                  ? 'bg-[#0B192C] text-white border-[#0B192C]'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
                     <input
                       type="text"
                       required
-                      placeholder="Frame Name"
+                      placeholder="Frame Name (e.g. Victoria Sovereign Titanium)"
                       value={newProd.name}
                       onChange={(e) => setNewProd({ ...newProd, name: e.target.value })}
                       className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                     />
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       <input
                         type="text"
                         required
@@ -3162,6 +3664,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         onChange={(e) => setNewProd({ ...newProd, priceNgn: Number(e.target.value) })}
                         className="border border-slate-300 rounded-lg px-3 py-2 text-xs font-tabular"
                       />
+                      <input
+                        type="number"
+                        required
+                        placeholder="Stock Qty"
+                        value={newProd.stockQuantity}
+                        onChange={(e) =>
+                          setNewProd({ ...newProd, stockQuantity: Number(e.target.value) })
+                        }
+                        className="border border-slate-300 rounded-lg px-3 py-2 text-xs font-tabular"
+                      />
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       <select
@@ -3173,6 +3685,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <option value="AI Glasses">AI Smart Glasses</option>
                         <option value="Luxury">Luxury Frame</option>
                         <option value="Sports">Sports Frame</option>
+                        <option value="Men">Men&apos;s Optical</option>
+                        <option value="Women">Women&apos;s Optical</option>
                       </select>
                       <select
                         value={newProd.shape}
@@ -3196,6 +3710,38 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <option value="Children">Children</option>
                       </select>
                     </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <select
+                        value={newProd.rimStyle}
+                        onChange={(e) => setNewProd({ ...newProd, rimStyle: e.target.value })}
+                        className="border border-slate-300 rounded-lg px-2.5 py-2 text-xs bg-white"
+                      >
+                        <option value="Full-Rim">Full-Rim</option>
+                        <option value="Half-Rim">Half-Rim</option>
+                        <option value="Rimless">Rimless</option>
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Material (e.g. Acetate)"
+                        value={newProd.material}
+                        onChange={(e) => setNewProd({ ...newProd, material: e.target.value })}
+                        className="border border-slate-300 rounded-lg px-2.5 py-2 text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Size (51-19-145 mm)"
+                        value={newProd.dimensions}
+                        onChange={(e) => setNewProd({ ...newProd, dimensions: e.target.value })}
+                        className="border border-slate-300 rounded-lg px-2.5 py-2 text-xs"
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Available Colours (comma separated, e.g. Deep Navy, Gold)"
+                      value={newProd.colorsCsv}
+                      onChange={(e) => setNewProd({ ...newProd, colorsCsv: e.target.value })}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
+                    />
                     <textarea
                       rows={3}
                       required
@@ -3206,9 +3752,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     />
                     <button
                       type="submit"
-                      className="w-full py-2.5 bg-[#0B192C] text-white text-xs font-semibold rounded-lg cursor-pointer"
+                      disabled={isCreatingProduct}
+                      className="w-full py-2.5 bg-[#0B192C] hover:bg-[#162B49] disabled:opacity-60 text-white text-xs font-semibold rounded-lg cursor-pointer flex items-center justify-center gap-2"
                     >
-                      Publish Frame to Storefront
+                      <Plus className="w-4 h-4 text-[#C5A059]" />
+                      <span>
+                        {isCreatingProduct
+                          ? 'Publishing Frame to Storefront...'
+                          : 'Publish Frame to Storefront'}
+                      </span>
                     </button>
                   </form>
                 )}
@@ -4837,12 +5389,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  if (!idToken || !replyTextMap[enq.id]) return;
+                                  if (!replyTextMap[enq.id]) return;
                                   await fetch(`/api/admin/enquiries/${enq.id}/reply`, {
                                     method: 'PUT',
                                     headers: {
                                       'Content-Type': 'application/json',
-                                      Authorization: `Bearer ${idToken}`,
+                                      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
                                     },
                                     body: JSON.stringify({ adminReply: replyTextMap[enq.id] }),
                                   });

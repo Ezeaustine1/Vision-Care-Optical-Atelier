@@ -497,7 +497,7 @@ export default function App() {
       .filter((p) => (filterShape === 'ALL' ? true : p.shape === filterShape))
       .filter((p) => (filterRim === 'ALL' ? true : p.rimStyle === filterRim))
       .filter((p) => (filterMaterial === 'ALL' ? true : p.material === filterMaterial))
-      .filter((p) => (p.discountPriceNgn || p.priceNgn) <= filterMaxPrice)
+      .filter((p) => (filterMaxPrice >= 650000 ? true : (p.discountPriceNgn || p.priceNgn) <= filterMaxPrice))
       .filter((p) =>
         searchQuery.trim() === ''
           ? true
@@ -510,9 +510,9 @@ export default function App() {
         const priceB = b.discountPriceNgn || b.priceNgn;
         if (sortBy === 'price_asc') return priceA - priceB;
         if (sortBy === 'price_desc') return priceB - priceA;
-        if (sortBy === 'newest') return Number(b.isNewArrival) - Number(a.isNewArrival);
-        if (sortBy === 'bestselling') return Number(b.isBestSeller) - Number(a.isBestSeller);
-        return Number(b.isFeatured) - Number(a.isFeatured);
+        if (sortBy === 'newest') return Number(b.isNewArrival) - Number(a.isNewArrival) || b.id - a.id;
+        if (sortBy === 'bestselling') return Number(b.isBestSeller) - Number(a.isBestSeller) || b.id - a.id;
+        return Number(b.isFeatured) - Number(a.isFeatured) || b.id - a.id;
       });
   }, [products, filterGender, filterShape, filterRim, filterMaterial, filterMaxPrice, searchQuery, sortBy]);
 
@@ -1730,7 +1730,46 @@ export default function App() {
 
                   {/* Product Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                    {filteredFrames.map((prod) => {
+                    {loadingCatalog
+                      ? Array.from({ length: 6 }).map((_, idx) => (
+                          <div
+                            key={`frame-skeleton-${idx}`}
+                            className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between animate-pulse"
+                          >
+                            <div>
+                              <div className="aspect-[4/3] bg-slate-200/80 relative">
+                                <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80" />
+                              </div>
+                              <div className="p-6 space-y-3">
+                                <div className="h-3 w-2/5 bg-slate-200 rounded" />
+                                <div className="flex items-center justify-between gap-2 pt-1">
+                                  <div className="h-5 w-3/5 bg-slate-200 rounded" />
+                                  <div className="h-5 w-20 bg-slate-200 rounded" />
+                                </div>
+                                <div className="h-3 w-2/3 bg-slate-200 rounded" />
+                                <div className="space-y-1.5 pt-1">
+                                  <div className="h-3 w-full bg-slate-200 rounded" />
+                                  <div className="h-3 w-4/5 bg-slate-200 rounded" />
+                                </div>
+                                <div className="mt-4 p-3 rounded-xl bg-slate-100 border border-slate-200/80 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <div className="h-3 w-1/2 bg-slate-200 rounded" />
+                                    <div className="h-4 w-20 bg-slate-200 rounded" />
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <div className="h-2.5 w-2/5 bg-slate-200 rounded" />
+                                    <div className="h-2.5 w-16 bg-slate-200 rounded" />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="px-6 pb-6 pt-2 flex items-center gap-2.5">
+                              <div className="flex-1 h-10 bg-slate-200 rounded-lg" />
+                              <div className="w-24 h-10 bg-slate-200 rounded-lg" />
+                            </div>
+                          </div>
+                        ))
+                      : filteredFrames.map((prod) => {
                       let imgs: string[] = [];
                       let cols: string[] = [];
                       try {
@@ -1934,8 +1973,45 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {products
-                .filter((p) => p.isActive && (p.category === 'AI Glasses' || p.sku.startsWith('VC-AI-')))
+              {loadingCatalog
+                ? Array.from({ length: 6 }).map((_, idx) => (
+                    <div
+                      key={`ai-glasses-skeleton-${idx}`}
+                      className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between shadow-xs animate-pulse"
+                    >
+                      <div>
+                        <div className="aspect-[4/3] bg-slate-200/80 relative">
+                          <div className="absolute top-3 left-3 w-36 h-6 rounded-lg bg-slate-300/80" />
+                          <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80" />
+                        </div>
+                        <div className="p-6 space-y-3">
+                          <div className="h-3 w-1/2 bg-slate-200 rounded" />
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="h-5 w-3/5 bg-slate-200 rounded" />
+                            <div className="h-5 w-20 bg-slate-200 rounded" />
+                          </div>
+                          <div className="h-3 w-3/4 bg-slate-200 rounded" />
+                          <div className="space-y-1.5 pt-1">
+                            <div className="h-3 w-full bg-slate-200 rounded" />
+                            <div className="h-3 w-5/6 bg-slate-200 rounded" />
+                            <div className="h-3 w-2/3 bg-slate-200 rounded" />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="px-6 pb-6 pt-2 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-10 bg-slate-200 rounded-lg" />
+                          <div className="w-24 h-10 bg-slate-200 rounded-lg" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="h-8 bg-slate-200 rounded-lg" />
+                          <div className="h-8 bg-slate-200 rounded-lg" />
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                : products
+                    .filter((p) => p.isActive && (p.category === 'AI Glasses' || p.sku.startsWith('VC-AI-')))
                 .filter((p) => {
                   if (aiGlassesSpecFilter === 'ALL') return true;
                   const text = `${p.name} ${p.description}`.toLowerCase();

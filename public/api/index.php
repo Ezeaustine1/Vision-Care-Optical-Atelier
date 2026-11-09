@@ -31,15 +31,36 @@ try {
     exit;
 }
 
-$method = $_SERVER['REQUEST_METHOD'];
-$requestUri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$rawRequestUri = $_SERVER['REQUEST_URI'] ?? ($_SERVER['REDIRECT_URL'] ?? '/');
+$requestUri = parse_url($rawRequestUri, PHP_URL_PATH) ?: '/';
 // Normalize path so /api/catalog or /subfolder/api/catalog becomes /api/catalog
 $apiPos = strpos($requestUri, '/api/');
-$path = $apiPos !== false ? substr($requestUri, $apiPos) : $requestUri;
+if ($apiPos !== false) {
+    $path = substr($requestUri, $apiPos);
+} elseif (!empty($_SERVER['PATH_INFO'])) {
+    $path = '/api/' . ltrim((string)$_SERVER['PATH_INFO'], '/');
+} else {
+    $path = $requestUri;
+}
 $path = rtrim($path, '/') ?: '/';
 
 $rawBody = file_get_contents('php://input');
-$body = $rawBody ? (json_decode($rawBody, true) ?: []) : [];
+$body = [];
+if ($rawBody !== false && trim($rawBody) !== '') {
+    $decodedBody = json_decode($rawBody, true);
+    if (json_last_error() === JSON_ERROR_NONE && is_array($decodedBody)) {
+        $body = $decodedBody;
+    } else {
+        http_response_code(400);
+        echo json_encode([
+            'error' => 'Invalid JSON request payload (' . json_last_error_msg() . '). If uploading a large image, ensure PHP post_max_size is at least 16M.',
+        ]);
+        exit;
+    }
+} elseif (!empty($_POST)) {
+    $body = $_POST;
+}
 
 // Helper: Load storefront_config JSON from site_content
 function get_site_config(PDO $pdo): array {
@@ -879,86 +900,280 @@ if ($method === 'PUT' && preg_match('#^/api/admin/appointments/(\d+)$#', $path, 
 
 if ($method === 'POST' && $path === '/api/admin/products') {
     verify_request_auth(true);
-    if (!empty($body['id'])) {
-        $id = (int)$body['id'];
-        $stmt = $pdo->prepare("SELECT * FROM `products` WHERE `id` = ? LIMIT 1");
-        $stmt->execute([$id]);
-        $existing = $stmt->fetch();
-        if ($existing) {
+    try {
+        ensure_products_table_columns($pdo);
+
+        // Helper to normalize imagesJson from imagesJson, images array, or imageUrl
+        $normalizeImagesJson = function (array $input, ?string $fallbackJson = null): string {
+            if (!empty($input['imagesJson'])) {
+                if (is_array($input['imagesJson'])) {
+                    return json_encode(array_values(array_filter(array_map('strval', $input['imagesJson']))));
+                }
+                $decoded = json_decode((string)$input['imagesJson'], true);
+                if (is_array($decoded) && count($decoded) > 0) {
+                    return json_encode(array_values($decoded));
+                }
+                $trimmed = trim((string)$input['imagesJson']);
+                if ($trimmed !== '') {
+                    return json_encode([$trimmed]);
+                }
+            }
+            if (!empty($input['images']) && is_array($input['images'])) {
+                return json_encode(array_values(array_filter(array_map('strval', $input['images']))));
+            }
+            if (!empty($input['imageUrl']) && trim((string)$input['imageUrl']) !== '') {
+                return json_encode([trim((string)$input['imageUrl'])]);
+            }
+            return $fallbackJson ?: json_encode(['/src/assets/images/frame_round_navy_1793890600366.jpg']);
+        };
+
+        // Helper to normalize colorsJson from colorsJson, colors array, or colorsCsv
+        $normalizeColorsJson = function (array $input, ?string $fallbackJson = null): string {
+            if (!empty($input['colorsJson'])) {
+                if (is_array($input['colorsJson'])) {
+                    return json_encode(array_values(array_filter(array_map('strval', $input['colorsJson']))));
+                }
+                $decoded = json_decode((string)$input['colorsJson'], true);
+                if (is_array($decoded) && count($decoded) > 0) {
+                    return json_encode(array_values($decoded));
+                }
+            }
+            if (!empty($input['colors']) && is_array($input['colors'])) {
+                return json_encode(array_values(array_filter(array_map('strval', $input['colors']))));
+            }
+            if (!empty($input['colorsCsv']) && is_string($input['colorsCsv'])) {
+                $parts = array_values(array_filter(array_map('trim', explode(',', $input['colorsCsv']))));
+                if (count($parts) > 0) {
+                    return json_encode($parts);
+                }
+            }
+            return $fallbackJson ?: json_encode(['Obsidian Black', 'Tortoise']);
+        };
+
+        // 1. UPDATE EXISTING PRODUCT (when `id` is provided)
+        if (!empty($body['id'])) {
+            $id = (int)$body['id'];
+            $stmt = $pdo->prepare("SELECT * FROM `products` WHERE `id` = ? LIMIT 1");
+            $stmt->execute([$id]);
+            $existing = $stmt->fetch();
+            if (!$existing) {
+                http_response_code(404);
+                echo json_encode(['error' => "Frame with ID #{$id} was not found in the MySQL database."]);
+                exit;
+            }
+
+            $nextName  = isset($body['name']) ? trim((string)$body['name']) : (string)$existing['name'];
+            $nextBrand = isset($body['brand']) ? trim((string)$body['brand']) : (string)$existing['brand'];
+            $nextPrice = isset($body['priceNgn']) ? (int)$body['priceNgn'] : (int)$existing['price_ngn'];
+            if ($nextName === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Frame Name cannot be empty.']);
+                exit;
+            }
+            if ($nextPrice < 0) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Frame Price (NGN) cannot be negative.']);
+                exit;
+            }
+
+            $nextDiscount = array_key_exists('discountPriceNgn', $body)
+                ? ($body['discountPriceNgn'] !== null && $body['discountPriceNgn'] !== '' && (int)$body['discountPriceNgn'] > 0
+                    ? (int)$body['discountPriceNgn']
+                    : null)
+                : ($existing['discount_price_ngn'] !== null ? (int)$existing['discount_price_ngn'] : null);
+
+            $nextStock = isset($body['stockQuantity'])
+                ? max(0, (int)$body['stockQuantity'])
+                : (int)$existing['stock_quantity'];
+
+            $nextColorsJson = (isset($body['colorsJson']) || isset($body['colors']) || isset($body['colorsCsv']))
+                ? $normalizeColorsJson($body, (string)$existing['colors_json'])
+                : (string)$existing['colors_json'];
+
+            $nextImagesJson = (isset($body['imagesJson']) || isset($body['images']) || isset($body['imageUrl']))
+                ? $normalizeImagesJson($body, (string)$existing['images_json'])
+                : (string)$existing['images_json'];
+
             $upd = $pdo->prepare("
                 UPDATE `products`
-                SET `name` = ?, `brand` = ?, `price_ngn` = ?, `discount_price_ngn` = ?, `stock_quantity` = ?, `description` = ?
+                SET `name` = ?, `brand` = ?, `category` = ?, `gender` = ?, `shape` = ?,
+                    `rim_style` = ?, `material` = ?, `dimensions` = ?,
+                    `price_ngn` = ?, `discount_price_ngn` = ?, `stock_quantity` = ?,
+                    `colors_json` = ?, `images_json` = ?, `description` = ?,
+                    `is_featured` = ?, `is_best_seller` = ?, `is_new_arrival` = ?, `is_active` = ?
                 WHERE `id` = ?
             ");
             $upd->execute([
-                $body['name'] ?? $existing['name'],
-                $body['brand'] ?? $existing['brand'],
-                isset($body['priceNgn']) ? (int)$body['priceNgn'] : (int)$existing['price_ngn'],
-                array_key_exists('discountPriceNgn', $body) ? ($body['discountPriceNgn'] !== null ? (int)$body['discountPriceNgn'] : null) : $existing['discount_price_ngn'],
-                isset($body['stockQuantity']) ? (int)$body['stockQuantity'] : (int)$existing['stock_quantity'],
-                $body['description'] ?? $existing['description'],
+                $nextName,
+                $nextBrand !== '' ? $nextBrand : 'VISION CARE ATELIER',
+                isset($body['category']) && trim((string)$body['category']) !== '' ? trim((string)$body['category']) : $existing['category'],
+                isset($body['gender']) && trim((string)$body['gender']) !== '' ? trim((string)$body['gender']) : $existing['gender'],
+                isset($body['shape']) && trim((string)$body['shape']) !== '' ? trim((string)$body['shape']) : $existing['shape'],
+                isset($body['rimStyle']) && trim((string)$body['rimStyle']) !== '' ? trim((string)$body['rimStyle']) : $existing['rim_style'],
+                isset($body['material']) && trim((string)$body['material']) !== '' ? trim((string)$body['material']) : $existing['material'],
+                isset($body['dimensions']) && trim((string)$body['dimensions']) !== '' ? trim((string)$body['dimensions']) : $existing['dimensions'],
+                $nextPrice,
+                $nextDiscount,
+                $nextStock,
+                $nextColorsJson,
+                $nextImagesJson,
+                isset($body['description']) ? trim((string)$body['description']) : $existing['description'],
+                isset($body['isFeatured']) ? (!empty($body['isFeatured']) ? 1 : 0) : (int)$existing['is_featured'],
+                isset($body['isBestSeller']) ? (!empty($body['isBestSeller']) ? 1 : 0) : (int)$existing['is_best_seller'],
+                isset($body['isNewArrival']) ? (!empty($body['isNewArrival']) ? 1 : 0) : (int)$existing['is_new_arrival'],
+                isset($body['isActive']) ? (!empty($body['isActive']) ? 1 : 0) : (int)$existing['is_active'],
                 $id,
             ]);
             $stmt->execute([$id]);
-            echo json_encode(format_product($stmt->fetch()));
+            $updatedRow = $stmt->fetch();
+            echo json_encode(format_product($updatedRow));
             exit;
         }
-    }
 
-    $sku = (string)($body['sku'] ?? ('VC-FRM-' . random_int(100, 999)));
-    $ins = $pdo->prepare("
-        INSERT INTO `products` (
-            `sku`, `name`, `brand`, `category`, `gender`, `shape`, `rim_style`, `material`,
-            `dimensions`, `price_ngn`, `discount_price_ngn`, `colors_json`, `images_json`,
-            `stock_quantity`, `is_protective_ready`, `default_protective_type`,
-            `is_featured`, `is_best_seller`, `is_new_arrival`, `is_active`, `description`
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Blue Cut Glasses', 1, 0, 1, 1, ?)
-    ");
-    $ins->execute([
-        $sku,
-        (string)($body['name'] ?? 'New Optical Frame'),
-        (string)($body['brand'] ?? 'VISION CARE ATELIER'),
-        (string)($body['category'] ?? 'Unisex'),
-        (string)($body['gender'] ?? 'Unisex'),
-        (string)($body['shape'] ?? 'Round'),
-        (string)($body['rimStyle'] ?? 'Full-Rim'),
-        (string)($body['material'] ?? 'Italian Acetate'),
-        (string)($body['dimensions'] ?? '52-18-145 mm'),
-        (int)($body['priceNgn'] ?? 85000),
-        isset($body['discountPriceNgn']) && $body['discountPriceNgn'] !== null ? (int)$body['discountPriceNgn'] : null,
-        (string)($body['colorsJson'] ?? json_encode(['Obsidian Black', 'Tortoise'])),
-        (string)($body['imagesJson'] ?? json_encode(['/src/assets/images/frame_round_navy_1793890600366.jpg'])),
-        (int)($body['stockQuantity'] ?? 20),
-        (string)($body['description'] ?? ''),
-    ]);
-    $newId = (int)$pdo->lastInsertId();
-    $stmt = $pdo->prepare("SELECT * FROM `products` WHERE `id` = ?");
-    $stmt->execute([$newId]);
-    echo json_encode(format_product($stmt->fetch()));
-    exit;
+        // 2. CREATE & PUBLISH NEW FRAME TO STOREFRONT
+        $name        = trim((string)($body['name'] ?? ''));
+        $brand       = trim((string)($body['brand'] ?? 'VISION CARE ATELIER'));
+        $priceNgn    = isset($body['priceNgn']) ? (int)$body['priceNgn'] : 0;
+        $stockQty    = isset($body['stockQuantity']) ? (int)$body['stockQuantity'] : 20;
+        $category    = trim((string)($body['category'] ?? 'Unisex')) ?: 'Unisex';
+        $gender      = trim((string)($body['gender'] ?? 'Unisex')) ?: 'Unisex';
+        $shape       = trim((string)($body['shape'] ?? 'Round')) ?: 'Round';
+        $rimStyle    = trim((string)($body['rimStyle'] ?? 'Full-Rim')) ?: 'Full-Rim';
+        $material    = trim((string)($body['material'] ?? 'Italian Acetate')) ?: 'Italian Acetate';
+        $dimensions  = trim((string)($body['dimensions'] ?? '52-18-145 mm')) ?: '52-18-145 mm';
+        $description = trim((string)($body['description'] ?? ''));
+
+        if ($name === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Validation Error: Frame Name is required before publishing to the storefront.']);
+            exit;
+        }
+        if ($brand === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Validation Error: Frame Brand is required.']);
+            exit;
+        }
+        if ($priceNgn <= 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Validation Error: Frame Price (NGN) must be greater than ₦0.']);
+            exit;
+        }
+        if ($stockQty < 0) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Validation Error: Stock Quantity cannot be negative.']);
+            exit;
+        }
+        if ($description === '') {
+            $description = "{$name} precision optical frame crafted in {$material} by {$brand}.";
+        }
+
+        $sku = trim((string)($body['sku'] ?? ''));
+        if ($sku === '') {
+            $sku = 'VC-FRM-' . random_int(100, 999);
+        }
+
+        // Prevent UNIQUE KEY `uniq_products_sku` collision in MySQL
+        $skuCheck = $pdo->prepare("SELECT `id` FROM `products` WHERE `sku` = ? LIMIT 1");
+        $skuCheck->execute([$sku]);
+        if ($skuCheck->fetch()) {
+            $sku = $sku . '-' . random_int(100, 999);
+        }
+
+        $colorsJson = $normalizeColorsJson($body);
+        $imagesJson = $normalizeImagesJson($body);
+        $discountPriceNgn = isset($body['discountPriceNgn']) && $body['discountPriceNgn'] !== null && (int)$body['discountPriceNgn'] > 0
+            ? (int)$body['discountPriceNgn']
+            : null;
+
+        $ins = $pdo->prepare("
+            INSERT INTO `products` (
+                `sku`, `name`, `brand`, `category`, `gender`, `shape`, `rim_style`, `material`,
+                `dimensions`, `price_ngn`, `discount_price_ngn`, `colors_json`, `images_json`,
+                `stock_quantity`, `is_protective_ready`, `default_protective_type`,
+                `is_featured`, `is_best_seller`, `is_new_arrival`, `is_active`, `description`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $ins->execute([
+            $sku,
+            $name,
+            $brand,
+            $category,
+            $gender,
+            $shape,
+            $rimStyle,
+            $material,
+            $dimensions,
+            $priceNgn,
+            $discountPriceNgn,
+            $colorsJson,
+            $imagesJson,
+            $stockQty,
+            isset($body['isProtectiveReady']) ? (!empty($body['isProtectiveReady']) ? 1 : 0) : 1,
+            trim((string)($body['defaultProtectiveType'] ?? 'Blue Cut Glasses')) ?: 'Blue Cut Glasses',
+            isset($body['isFeatured']) ? (!empty($body['isFeatured']) ? 1 : 0) : 1,
+            isset($body['isBestSeller']) ? (!empty($body['isBestSeller']) ? 1 : 0) : 0,
+            isset($body['isNewArrival']) ? (!empty($body['isNewArrival']) ? 1 : 0) : 1,
+            isset($body['isActive']) ? (!empty($body['isActive']) ? 1 : 0) : 1,
+            $description,
+        ]);
+
+        $newId = (int)$pdo->lastInsertId();
+        $stmt = $pdo->prepare("SELECT * FROM `products` WHERE `id` = ? LIMIT 1");
+        $stmt->execute([$newId]);
+        $createdRow = $stmt->fetch();
+        if (!$createdRow) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Frame was inserted into MySQL, but the created record could not be retrieved.']);
+            exit;
+        }
+        echo json_encode(format_product($createdRow));
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'MySQL Database Error while saving frame: ' . $e->getMessage(),
+        ]);
+        exit;
+    }
 }
 
 if ($method === 'POST' && preg_match('#^/api/admin/products/(\d+)/price-drop-alert$#', $path, $m)) {
     verify_request_auth(true);
-    $id = (int)$m[1];
-    $priceNgn    = (int)($body['priceNgn'] ?? 0);
-    $discountNgn = isset($body['discountPriceNgn']) && $body['discountPriceNgn'] !== null ? (int)$body['discountPriceNgn'] : null;
+    try {
+        $id = (int)$m[1];
+        $priceNgn    = (int)($body['priceNgn'] ?? 0);
+        $discountNgn = isset($body['discountPriceNgn']) && $body['discountPriceNgn'] !== null && (int)$body['discountPriceNgn'] > 0
+            ? (int)$body['discountPriceNgn']
+            : null;
 
-    $pdo->prepare("UPDATE `products` SET `price_ngn` = ?, `discount_price_ngn` = ? WHERE `id` = ?")
-        ->execute([$priceNgn, $discountNgn, $id]);
+        $pdo->prepare("UPDATE `products` SET `price_ngn` = ?, `discount_price_ngn` = ? WHERE `id` = ?")
+            ->execute([$priceNgn, $discountNgn, $id]);
 
-    $wStmt = $pdo->prepare("SELECT DISTINCT `user_uid` FROM `wishlists` WHERE `product_id` = ?");
-    $wStmt->execute([$id]);
-    $uids = $wStmt->fetchAll(PDO::FETCH_COLUMN);
-    echo json_encode(['ok' => true, 'notifiedCount' => max(1, count($uids))]);
-    exit;
+        $wStmt = $pdo->prepare("SELECT DISTINCT `user_uid` FROM `wishlists` WHERE `product_id` = ?");
+        $wStmt->execute([$id]);
+        $uids = $wStmt->fetchAll(PDO::FETCH_COLUMN);
+        echo json_encode(['ok' => true, 'notifiedCount' => max(1, count($uids))]);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'MySQL Error updating discount price: ' . $e->getMessage()]);
+        exit;
+    }
 }
 
 if ($method === 'DELETE' && preg_match('#^/api/admin/products/(\d+)$#', $path, $m)) {
     verify_request_auth(true);
-    $pdo->prepare("DELETE FROM `products` WHERE `id` = ?")->execute([(int)$m[1]]);
-    echo json_encode(['deleted' => true]);
-    exit;
+    try {
+        $prodId = (int)$m[1];
+        $pdo->prepare("DELETE FROM `wishlists` WHERE `product_id` = ?")->execute([$prodId]);
+        $pdo->prepare("DELETE FROM `products` WHERE `id` = ?")->execute([$prodId]);
+        echo json_encode(['deleted' => true]);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'MySQL Error deleting frame: ' . $e->getMessage()]);
+        exit;
+    }
 }
 
 if ($method === 'POST' && $path === '/api/admin/lens-types') {
