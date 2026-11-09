@@ -223,7 +223,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [customerPage, setCustomerPage] = useState<number>(1);
 
   const [cmsSubTab, setCmsSubTab] = useState<
-    'headlines_banner' | 'hero_vault' | 'about_me' | 'bank_contact' | 'all'
+    'headlines_banner' | 'hero_vault' | 'about_me' | 'bank_contact' | 'cpanel_env' | 'all'
   >('headlines_banner');
 
   const fetchAdminData = async () => {
@@ -726,6 +726,17 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 {statusMessage}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                setSection('cms');
+                setCmsSubTab('cpanel_env');
+              }}
+              className="px-3.5 py-1.5 bg-[#1E40AF] hover:bg-blue-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer shrink-0 border border-white/15"
+            >
+              <Settings className="w-3.5 h-3.5 text-[#C5A059]" />
+              <span>Environment Variables (.env &amp; MySQL)</span>
+            </button>
             <button
               type="button"
               onClick={handleExportCsvReport}
@@ -4937,6 +4948,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 { id: 'hero_vault' as const, label: '2. Hero Video & Picture Vault' },
                 { id: 'about_me' as const, label: '3. About Me (Doctor Profile)' },
                 { id: 'bank_contact' as const, label: '4. Payment Gateways & Bank Account' },
+                { id: 'cpanel_env' as const, label: '5. Environment Variables (.env & cPanel MySQL)' },
                 { id: 'all' as const, label: 'Show All CMS Fields' },
               ].map((tab) => (
                 <button
@@ -5659,6 +5671,143 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       onChange={(e) => setSiteConfig({ ...siteConfig, bankAccountNumber: e.target.value })}
                       placeholder="1018492031"
                       className="w-full border border-slate-300 focus:border-[#1E40AF] focus:outline-none rounded-lg px-3.5 py-2.5 text-xs sm:text-sm font-tabular"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(cmsSubTab === 'cpanel_env' || cmsSubTab === 'all') && (
+              <div className="rounded-xl bg-[#FAF9F6] border border-slate-200 p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                  <div>
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-[#1E40AF]">
+                      Environment Variables &amp; cPanel MySQL Configuration
+                    </span>
+                    <h4 className="text-base font-semibold text-[#0B192C] mt-0.5">
+                      Input &amp; Save Your Environment Variables (Pre-Filled &amp; Ready to Use)
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      All values are pre-filled so your app works immediately. You can edit any value below, click &ldquo;Save Storefront Settings&rdquo;, or download a ready-to-upload `.env` file for cPanel &amp; GitHub.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const envContent = [
+                        `MYSQL_HOST="${siteConfig.envMysqlHost || 'localhost'}"`,
+                        `MYSQL_PORT="${siteConfig.envMysqlPort || '3306'}"`,
+                        `MYSQL_DATABASE="${siteConfig.envMysqlDatabase || 'visioncare_db'}"`,
+                        `MYSQL_USER="${siteConfig.envMysqlUser || 'visioncare_admin'}"`,
+                        `MYSQL_PASSWORD="${siteConfig.envMysqlPassword || 'VisionCare2026!'}"`,
+                        `ADMIN_EMAIL="${siteConfig.envAdminEmail || 'ezehaustine1@gmail.com'}"`,
+                        `APP_URL="${siteConfig.envAppUrl || window.location.origin}"`,
+                        `SMTP_HOST="${siteConfig.smtpHost || 'smtp.gmail.com'}"`,
+                        `SMTP_PORT="${siteConfig.smtpPort || '465'}"`,
+                        `SMTP_USER="${siteConfig.smtpUser || 'ezehaustine1@gmail.com'}"`,
+                        `SMTP_FROM="${siteConfig.smtpFrom || 'ezehaustine1@gmail.com'}"`,
+                      ].join('\n');
+                      const blob = new Blob([envContent], { type: 'text/plain;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = '.env';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                      setStatusMessage('Downloaded .env configuration file for cPanel / GitHub.');
+                    }}
+                    className="px-3.5 py-2 bg-[#1E40AF] hover:bg-blue-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download `.env` File</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      MYSQL_HOST (cPanel Database Host)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envMysqlHost ?? 'localhost'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envMysqlHost: e.target.value })}
+                      placeholder="localhost"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      MYSQL_PORT (MySQL Port)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envMysqlPort ?? '3306'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envMysqlPort: e.target.value })}
+                      placeholder="3306"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      MYSQL_DATABASE (Database Name)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envMysqlDatabase ?? 'visioncare_db'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envMysqlDatabase: e.target.value })}
+                      placeholder="visioncare_db"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      MYSQL_USER (Database Username)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envMysqlUser ?? 'visioncare_admin'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envMysqlUser: e.target.value })}
+                      placeholder="visioncare_admin"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      MYSQL_PASSWORD (Database Password)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envMysqlPassword ?? 'VisionCare2026!'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envMysqlPassword: e.target.value })}
+                      placeholder="VisionCare2026!"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      ADMIN_EMAIL (Chief Admin Email)
+                    </label>
+                    <input
+                      type="email"
+                      value={siteConfig.envAdminEmail ?? 'ezehaustine1@gmail.com'}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envAdminEmail: e.target.value })}
+                      placeholder="ezehaustine1@gmail.com"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      APP_URL (Website Domain / Application URL)
+                    </label>
+                    <input
+                      type="text"
+                      value={siteConfig.envAppUrl ?? window.location.origin}
+                      onChange={(e) => setSiteConfig({ ...siteConfig, envAppUrl: e.target.value })}
+                      placeholder="https://yourdomain.com"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
                     />
                   </div>
                 </div>
