@@ -51,47 +51,77 @@ export async function deliverEmailAndNotificationToClient(params: {
   siteConfig?: Record<string, any>;
 }): Promise<OutboundEmailResult | null> {
   const cleanEmail = (params.toEmail || '').trim().toLowerCase();
+  const cleanInputUid = (params.userUid || '').trim();
   const targetUids = new Set<string>();
-  if (params.userUid && params.userUid.trim()) {
-    targetUids.add(params.userUid.trim());
-  }
 
   let resolvedEmail = cleanEmail;
   let resolvedName = params.toName || '';
 
   try {
     const allUsers = await db.select().from(users);
-    for (const u of allUsers) {
-      if (params.userUid && u.uid === params.userUid) {
-        if (!resolvedEmail && u.email) resolvedEmail = u.email.trim().toLowerCase();
-        if (!resolvedName && u.fullName) resolvedName = u.fullName;
+    if (cleanEmail) {
+      // Strictly target ONLY accounts belonging to cleanEmail so messages never leak to another client
+      const deterministicUid = `vc_user_${Buffer.from(cleanEmail).toString('hex').slice(0, 20)}`;
+      targetUids.add(deterministicUid);
+      targetUids.add(`email:${cleanEmail}`);
+
+      for (const u of allUsers) {
+        const uEmail = (u.email || '').trim().toLowerCase();
+        if (uEmail === cleanEmail) {
+          if (u.uid) targetUids.add(u.uid.trim());
+          if (!resolvedName && u.fullName) resolvedName = u.fullName;
+        }
       }
-      if (cleanEmail && u.email && u.email.trim().toLowerCase() === cleanEmail) {
-        if (u.uid) targetUids.add(u.uid);
-        if (!resolvedName && u.fullName) resolvedName = u.fullName;
+      // Only include cleanInputUid if it does NOT belong to a different user's email
+      if (cleanInputUid) {
+        const matchedInputUser = allUsers.find((u) => u.uid === cleanInputUid);
+        const inputUserEmail = (matchedInputUser?.email || '').trim().toLowerCase();
+        if (!inputUserEmail || inputUserEmail === cleanEmail) {
+          targetUids.add(cleanInputUid);
+        }
+      }
+    } else if (cleanInputUid) {
+      targetUids.add(cleanInputUid);
+      for (const u of allUsers) {
+        if (u.uid === cleanInputUid) {
+          if (u.email) {
+            resolvedEmail = u.email.trim().toLowerCase();
+            targetUids.add(`email:${resolvedEmail}`);
+          }
+          if (!resolvedName && u.fullName) resolvedName = u.fullName;
+        }
       }
     }
   } catch {
-    // Continue even if user lookup fails
+    if (cleanEmail) {
+      targetUids.add(`vc_user_${Buffer.from(cleanEmail).toString('hex').slice(0, 20)}`);
+      targetUids.add(`email:${cleanEmail}`);
+    } else if (cleanInputUid) {
+      targetUids.add(cleanInputUid);
+    }
   }
 
-  if (resolvedEmail) {
-    targetUids.add(`email:${resolvedEmail}`);
-  }
+  const hasEyewearOrder = Boolean(
+    params.orderDetails?.items && params.orderDetails.items.length > 0
+  );
 
   const resolvedTrackingUrl =
     params.trackingUrl ||
-    (params.orderNumber ? buildOrderTrackingUrl(params.orderNumber, params.appBaseUrl) : undefined);
+    (hasEyewearOrder && params.orderNumber
+      ? buildOrderTrackingUrl(params.orderNumber, params.appBaseUrl)
+      : undefined);
 
   const attachmentNotes: string[] = [];
-  if (params.orderDetails?.items && params.orderDetails.items.length > 0) {
+  if (hasEyewearOrder && params.orderDetails?.items) {
     attachmentNotes.push(
       `Product Image(s): ${params.orderDetails.items.map((it) => it.productName).join(', ')}`
     );
-    attachmentNotes.push(`Attached PDF: VisionCare-Lens-Prescription-${params.orderNumber || 'Order'}.pdf`);
-  }
-  if (resolvedTrackingUrl) {
-    attachmentNotes.push(`Track Order Link: ${resolvedTrackingUrl}`);
+    attachmentNotes.push(
+      `Attached PDF: VisionCare-Lens-Prescription-${params.orderNumber || 'Order'}.pdf`
+    );
+    if (resolvedTrackingUrl) {
+      attachmentNotes.push(`Track Order Link: ${resolvedTrackingUrl}`);
+    }
   }
 
   const enrichedMessage = [
@@ -127,7 +157,7 @@ export async function deliverEmailAndNotificationToClient(params: {
     bodyText: params.message,
     orderNumber: params.orderNumber,
     trackingUrl: resolvedTrackingUrl,
-    orderDetails: params.orderDetails,
+    orderDetails: hasEyewearOrder ? params.orderDetails : undefined,
     siteConfig: siteCfg,
   });
 }
@@ -959,12 +989,18 @@ export async function getCatalogBootstrap() {
       ...rawConfig,
     };
 
+    const hiddenReviewIds = await getHiddenReviewIds();
+    const enrichedReviews = allReviews.map((r) => ({
+      ...r,
+      isApproved: !hiddenReviewIds.includes(r.id),
+    }));
+
     return {
       products: allProducts,
       categories: allCategories,
       lensTypes: allLensTypes,
       lensCoatings: allCoatings,
-      reviews: allReviews,
+      reviews: enrichedReviews.filter((r) => r.isApproved !== false),
       coupons: allCoupons,
       siteConfig,
     };
@@ -1122,13 +1158,19 @@ export async function createOrderWithItems(
 
 export async function getUserOrdersWithItems(userUid: string, userEmail?: string) {
   try {
-    const allOrders = await db.select().from(orders).orderBy(desc(orders.createdAt));
+    const cleanUid = (userUid || '').trim();
     const cleanEmail = (userEmail || '').trim().toLowerCase();
-    const userOrders = allOrders.filter(
-      (ord) =>
-        ord.userUid === userUid ||
-        (cleanEmail && (ord.customerEmail || '').trim().toLowerCase() === cleanEmail)
-    );
+    if (!cleanUid && !cleanEmail) {
+      return [];
+    }
+    const allOrders = await db.select().from(orders).orderBy(desc(orders.createdAt));
+    const userOrders = allOrders.filter((ord) => {
+      const oUid = (ord.userUid || '').trim();
+      const oEmail = (ord.customerEmail || '').trim().toLowerCase();
+      if (cleanUid && oUid && oUid === cleanUid) return true;
+      if (cleanEmail && oEmail && oEmail === cleanEmail) return true;
+      return false;
+    });
 
     const allItems = await db.select().from(orderItems);
     return userOrders.map((ord) => ({
@@ -1327,12 +1369,25 @@ export async function updateOrderByAdmin(
 
 export async function getUserAccountBundle(userUid: string, userEmail?: string) {
   try {
+    const cleanUid = (userUid || '').trim();
     let resolvedEmail = (userEmail || '').trim().toLowerCase();
-    if (!resolvedEmail) {
-      const userRows = await db.select().from(users).where(eq(users.uid, userUid));
+    if (!resolvedEmail && cleanUid) {
+      const userRows = await db.select().from(users).where(eq(users.uid, cleanUid));
       if (userRows[0]?.email) {
         resolvedEmail = userRows[0].email.trim().toLowerCase();
       }
+    }
+
+    if (!cleanUid && !resolvedEmail) {
+      return {
+        orders: [],
+        prescriptions: [],
+        addresses: [],
+        wishlistProductIds: [],
+        notifications: [],
+        enquiries: [],
+        appointments: [],
+      };
     }
 
     const [
@@ -1344,21 +1399,42 @@ export async function getUserAccountBundle(userUid: string, userEmail?: string) 
       allEnquiries,
       allAppointments,
     ] = await Promise.all([
-      getUserOrdersWithItems(userUid, resolvedEmail),
-      getUserPrescriptions(userUid),
-      db.select().from(addresses).where(eq(addresses.userUid, userUid)).orderBy(desc(addresses.isDefault)),
-      db.select().from(wishlists).where(eq(wishlists.userUid, userUid)),
+      getUserOrdersWithItems(cleanUid, resolvedEmail),
+      cleanUid ? getUserPrescriptions(cleanUid) : Promise.resolve([]),
+      cleanUid
+        ? db.select().from(addresses).where(eq(addresses.userUid, cleanUid)).orderBy(desc(addresses.isDefault))
+        : Promise.resolve([]),
+      cleanUid
+        ? db.select().from(wishlists).where(eq(wishlists.userUid, cleanUid))
+        : Promise.resolve([]),
       db.select().from(notifications).orderBy(desc(notifications.createdAt)),
       db.select().from(enquiries).orderBy(desc(enquiries.createdAt)),
       getAllAppointments(),
     ]);
 
     const emailKey = resolvedEmail ? `email:${resolvedEmail}` : '';
-    const rawMatchedNotifications = allNotifications.filter(
-      (n) =>
-        n.userUid === userUid ||
-        (emailKey && n.userUid.toLowerCase() === emailKey)
-    );
+    const deterministicEmailUid = resolvedEmail
+      ? `vc_user_${Buffer.from(resolvedEmail).toString('hex').slice(0, 20)}`
+      : '';
+
+    const rawMatchedNotifications = allNotifications.filter((n) => {
+      const nUid = (n.userUid || '').trim();
+      if (!nUid) return false;
+
+      // If the notification message explicitly records a recipient email, it MUST match this user's email
+      const deliveredTagMatch = (n.message || '').match(/\[Delivered to Email:\s*([^\]]+)\]/i);
+      if (deliveredTagMatch && resolvedEmail) {
+        const tagEmail = deliveredTagMatch[1].trim().toLowerCase();
+        if (tagEmail && tagEmail !== resolvedEmail) {
+          return false;
+        }
+      }
+
+      if (cleanUid && nUid === cleanUid) return true;
+      if (deterministicEmailUid && nUid === deterministicEmailUid) return true;
+      if (emailKey && nUid.toLowerCase() === emailKey) return true;
+      return false;
+    });
 
     // Deduplicate notifications that were inserted for both uid and email:<address>
     const seenNotifKeys = new Set<string>();
@@ -1369,17 +1445,21 @@ export async function getUserAccountBundle(userUid: string, userEmail?: string) 
       return true;
     });
 
-    const userEnquiries = allEnquiries.filter(
-      (e) =>
-        e.userUid === userUid ||
-        (resolvedEmail && (e.customerEmail || '').trim().toLowerCase() === resolvedEmail)
-    );
+    const userEnquiries = allEnquiries.filter((e) => {
+      const eUid = (e.userUid || '').trim();
+      const eEmail = (e.customerEmail || '').trim().toLowerCase();
+      if (cleanUid && eUid && eUid === cleanUid) return true;
+      if (resolvedEmail && eEmail && eEmail === resolvedEmail) return true;
+      return false;
+    });
 
-    const userAppointments = allAppointments.filter(
-      (a) =>
-        a.userUid === userUid ||
-        (resolvedEmail && (a.patientEmail || '').trim().toLowerCase() === resolvedEmail)
-    );
+    const userAppointments = allAppointments.filter((a) => {
+      const aUid = (a.userUid || '').trim();
+      const aEmail = (a.patientEmail || '').trim().toLowerCase();
+      if (cleanUid && aUid && aUid === cleanUid) return true;
+      if (resolvedEmail && aEmail && aEmail === resolvedEmail) return true;
+      return false;
+    });
 
     return {
       orders: userOrders,
@@ -1582,7 +1662,7 @@ export async function triggerWishlistPriceDropAlert(
     const alertSummary = await dispatchWishlistPriceDropNotifications(
       updatedProduct,
       previousEffectivePrice,
-      true
+      false
     );
 
     return {
@@ -1905,13 +1985,128 @@ export async function updateSiteConfig(newConfig: Record<string, any>) {
   }
 }
 
-export async function createReview(data: typeof reviews.$inferInsert) {
+const HIDDEN_REVIEWS_KEY = 'hidden_review_ids';
+
+async function getHiddenReviewIds(): Promise<number[]> {
   try {
-    const res = await db.insert(reviews).values(data).returning();
-    return res[0];
+    const rows = await db
+      .select()
+      .from(siteContent)
+      .where(eq(siteContent.key, HIDDEN_REVIEWS_KEY));
+    if (!rows[0]) return [];
+    const parsed = JSON.parse(rows[0].valueJson);
+    return Array.isArray(parsed) ? parsed.map((n) => Number(n)).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveHiddenReviewIds(ids: number[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(ids.map((n) => Number(n)).filter(Boolean)));
+  await db
+    .insert(siteContent)
+    .values({
+      key: HIDDEN_REVIEWS_KEY,
+      valueJson: JSON.stringify(uniqueIds),
+    })
+    .onConflictDoUpdate({
+      target: siteContent.key,
+      set: {
+        valueJson: JSON.stringify(uniqueIds),
+        updatedAt: new Date(),
+      },
+    });
+}
+
+export async function createReview(
+  data: typeof reviews.$inferInsert & { isApproved?: boolean }
+) {
+  try {
+    const { isApproved, ...insertData } = data;
+    const res = await db.insert(reviews).values(insertData).returning();
+    const created = res[0];
+    if (created && isApproved === false) {
+      const hidden = await getHiddenReviewIds();
+      await saveHiddenReviewIds([...hidden, created.id]);
+    }
+    return {
+      ...created,
+      isApproved: isApproved !== false,
+    };
   } catch (error) {
     console.error('Database query failed in createReview:', error);
     throw new Error('Failed to post review.', { cause: error });
+  }
+}
+
+export async function getAllReviews() {
+  try {
+    await ensureSeeded();
+    const [rows, hiddenIds] = await Promise.all([
+      db.select().from(reviews).orderBy(desc(reviews.createdAt), desc(reviews.id)),
+      getHiddenReviewIds(),
+    ]);
+    return rows.map((r) => ({
+      ...r,
+      isApproved: !hiddenIds.includes(r.id),
+    }));
+  } catch (error) {
+    console.error('Database query failed in getAllReviews:', error);
+    return [];
+  }
+}
+
+export async function updateReviewById(
+  id: number,
+  updates: Partial<typeof reviews.$inferInsert> & { isApproved?: boolean }
+) {
+  try {
+    const { isApproved, ...dbUpdates } = updates;
+    if (typeof isApproved === 'boolean') {
+      const hidden = await getHiddenReviewIds();
+      const nextHidden = isApproved
+        ? hidden.filter((hid) => hid !== id)
+        : [...hidden, id];
+      await saveHiddenReviewIds(nextHidden);
+    }
+
+    let row: typeof reviews.$inferSelect | undefined;
+    if (Object.keys(dbUpdates).length > 0) {
+      const res = await db
+        .update(reviews)
+        .set(dbUpdates)
+        .where(eq(reviews.id, id))
+        .returning();
+      row = res[0];
+    } else {
+      const existing = await db.select().from(reviews).where(eq(reviews.id, id));
+      row = existing[0];
+    }
+
+    const hiddenAfter = await getHiddenReviewIds();
+    return row
+      ? {
+          ...row,
+          isApproved: !hiddenAfter.includes(row.id),
+        }
+      : undefined;
+  } catch (error) {
+    console.error('Database query failed in updateReviewById:', error);
+    throw new Error('Failed to update patient review.', { cause: error });
+  }
+}
+
+export async function deleteReviewById(id: number) {
+  try {
+    await db.delete(reviews).where(eq(reviews.id, id));
+    const hidden = await getHiddenReviewIds();
+    if (hidden.includes(id)) {
+      await saveHiddenReviewIds(hidden.filter((hid) => hid !== id));
+    }
+    return { deleted: true, id };
+  } catch (error) {
+    console.error('Database query failed in deleteReviewById:', error);
+    throw new Error('Failed to delete patient review.', { cause: error });
   }
 }
 
@@ -2035,10 +2230,14 @@ export async function getUserAppointments(
   email?: string
 ): Promise<ClinicalAppointmentRecord[]> {
   const all = await getAllAppointments();
+  const cleanUid = (userUid || '').trim();
   const cleanEmail = (email || '').trim().toLowerCase();
+  if (!cleanUid && !cleanEmail) {
+    return [];
+  }
   return all.filter(
     (a) =>
-      (userUid && a.userUid === userUid) ||
+      (cleanUid && a.userUid === cleanUid) ||
       (cleanEmail && a.patientEmail.trim().toLowerCase() === cleanEmail)
   );
 }
@@ -2055,6 +2254,8 @@ export async function createAppointmentRecord(
   const consultationFeeNgn = Number(payload.consultationFeeNgn ?? 15000);
   const treatmentFeeNgn = Number(payload.treatmentFeeNgn ?? 0);
   const totalChargeNgn = Number(payload.totalChargeNgn ?? consultationFeeNgn + treatmentFeeNgn);
+
+  const hasInitialPaymentRef = Boolean((payload.paymentReference || '').trim());
 
   const newRecord: ClinicalAppointmentRecord = {
     id: nextId,
@@ -2090,7 +2291,11 @@ export async function createAppointmentRecord(
     chargeReasonNote:
       payload.chargeReasonNote ||
       'Standard Consultation Fee + Selected Clinical Workup Charges.',
-    paymentStatus: totalChargeNgn > 0 ? 'unpaid' : 'awaiting_doctor_bill',
+    paymentStatus: hasInitialPaymentRef
+      ? 'pending_verification'
+      : totalChargeNgn > 0
+      ? 'unpaid'
+      : 'awaiting_doctor_bill',
     paymentMethod: payload.paymentMethod || 'paystack',
     paymentReference: payload.paymentReference || '',
     doctorName: payload.doctorName || 'Dr. Austine Ezeh, OD',
@@ -2109,13 +2314,15 @@ export async function createAppointmentRecord(
   const nextList = [newRecord, ...current];
   await saveAppointmentsList(nextList);
 
-  if (newRecord.userUid) {
+  if (newRecord.userUid || newRecord.patientEmail) {
     try {
-      await db.insert(notifications).values({
+      await deliverEmailAndNotificationToClient({
         userUid: newRecord.userUid,
-        title: `Eye Appointment ${newRecord.appointmentNumber} Booked`,
-        message: `Your clinical complaint (${newRecord.complaintCategory} - ${newRecord.affectedEye}) and medical history have been received by the Doctor. You will be notified as soon as your assessment, bill, and drug prescription are ready.`,
-        isRead: false,
+        toEmail: newRecord.patientEmail,
+        toName: newRecord.patientName,
+        title: `Eye Appointment ${newRecord.appointmentNumber} Logged (Awaiting Payment Confirmation)`,
+        message: `Dear ${newRecord.patientName}, your confidential eye appointment request (${newRecord.appointmentNumber}) for ${newRecord.complaintCategory} (${newRecord.affectedEye}) has been logged under your account. Total consultation & workup bill: ₦${newRecord.totalChargeNgn.toLocaleString()}. Once your payment is confirmed by the Admin, your file will be forwarded to the Attending Doctor.`,
+        orderNumber: newRecord.appointmentNumber,
       });
     } catch {
       // Ignore notification insert errors
@@ -2127,7 +2334,7 @@ export async function createAppointmentRecord(
 
 export async function updateAppointmentByDoctor(
   id: number,
-  updates: Partial<ClinicalAppointmentRecord>
+  updates: Partial<ClinicalAppointmentRecord> & { customMessageToPatient?: string }
 ): Promise<ClinicalAppointmentRecord> {
   const current = await getAllAppointments();
   const idx = current.findIndex((a) => a.id === id);
@@ -2156,6 +2363,8 @@ export async function updateAppointmentByDoctor(
   if (!updates.status) {
     if (hasPrescribedDrugs) {
       nextStatus = 'prescription_issued';
+    } else if (updates.paymentStatus === 'paid' && existing.status === 'pending_review') {
+      nextStatus = 'paid';
     } else if (totalChargeNgn > 0 && existing.status === 'pending_review') {
       nextStatus = 'assessed_billed';
     }
@@ -2171,9 +2380,11 @@ export async function updateAppointmentByDoctor(
       ? Boolean(updates.allowClientPdfDownload)
       : Boolean(existing.allowClientPdfDownload);
 
+  const { customMessageToPatient, ...cleanUpdates } = updates;
+
   const updated: ClinicalAppointmentRecord = {
     ...existing,
-    ...updates,
+    ...cleanUpdates,
     id: existing.id,
     appointmentNumber: existing.appointmentNumber,
     consultationFeeNgn,
@@ -2195,14 +2406,29 @@ export async function updateAppointmentByDoctor(
   if (updated.userUid || updated.patientEmail) {
     try {
       const rxCount = Array.isArray(updated.prescribedDrugs) ? updated.prescribedDrugs.length : 0;
-      const title =
-        rxCount > 0
-          ? `Doctor's Drug Prescription Ready (${updated.appointmentNumber})`
-          : `Doctor's Assessment & Consultation Bill (${updated.appointmentNumber})`;
-      const message =
-        rxCount > 0
-          ? `${updated.doctorName} has issued your official Drug Prescription (${rxCount} medication(s)) and clinical diagnosis ("${updated.clinicalDiagnosis}"). Total charge: ₦${updated.totalChargeNgn.toLocaleString()}. You can now print or download your Drug Prescription PDF.`
-          : `${updated.doctorName} reviewed your eye complaint (${updated.complaintCategory}). Total consultation & treatment fee: ₦${updated.totalChargeNgn.toLocaleString()} (${updated.chargeReasonNote}).`;
+      const paymentJustVerified =
+        existing.paymentStatus !== 'paid' && updated.paymentStatus === 'paid';
+
+      let title = `Appointment Update (${updated.appointmentNumber})`;
+      let message = '';
+
+      if (customMessageToPatient && customMessageToPatient.trim()) {
+        title = `Message from Attending Doctor / Admin (${updated.appointmentNumber})`;
+        message = customMessageToPatient.trim();
+      } else if (rxCount > 0) {
+        title = `Doctor's Drug Prescription Ready (${updated.appointmentNumber})`;
+        message = `${updated.doctorName} has issued your official Drug Prescription (${rxCount} medication(s)) and clinical diagnosis ("${updated.clinicalDiagnosis}"). Total charge: ₦${updated.totalChargeNgn.toLocaleString()}. ${
+          updated.allowClientPdfDownload
+            ? 'You can now print or download your Drug Prescription PDF from your Account.'
+            : 'Please complete any pending verification to unlock PDF printing.'
+        }`;
+      } else if (paymentJustVerified) {
+        title = `Payment Confirmed & Forwarded to Doctor (${updated.appointmentNumber})`;
+        message = `Your payment of ₦${updated.totalChargeNgn.toLocaleString()} for Eye Appointment ${updated.appointmentNumber} (${updated.complaintCategory}) has been verified by the Admin and forwarded to ${updated.doctorName} for clinical review and Drug Prescription.`;
+      } else {
+        title = `Doctor's Assessment & Consultation Bill (${updated.appointmentNumber})`;
+        message = `${updated.doctorName} reviewed your eye complaint (${updated.complaintCategory}). Total consultation & treatment fee: ₦${updated.totalChargeNgn.toLocaleString()} (${updated.chargeReasonNote}).`;
+      }
 
       await deliverEmailAndNotificationToClient({
         userUid: updated.userUid,
@@ -2225,7 +2451,7 @@ export async function updateAppointmentPaymentByClient(
   paymentData: {
     paymentMethod: string;
     paymentReference: string;
-    paymentStatus: 'paid' | 'pending_verification';
+    paymentStatus?: 'paid' | 'pending_verification';
   }
 ): Promise<ClinicalAppointmentRecord> {
   const current = await getAllAppointments();
@@ -2235,21 +2461,41 @@ export async function updateAppointmentPaymentByClient(
   }
 
   const existing = current[idx];
+  // Strictly enforce Admin confirmation before marking 'paid' or forwarding to the Doctor
+  const safePaymentStatus: 'pending_verification' | 'paid' =
+    existing.paymentStatus === 'paid' ? 'paid' : 'pending_verification';
+
   const updated: ClinicalAppointmentRecord = {
     ...existing,
-    paymentMethod: paymentData.paymentMethod,
-    paymentReference: paymentData.paymentReference,
-    paymentStatus: paymentData.paymentStatus,
-    status:
-      existing.status === 'assessed_billed' && paymentData.paymentStatus === 'paid'
-        ? 'paid'
-        : existing.status,
+    paymentMethod: paymentData.paymentMethod || existing.paymentMethod || 'bank_transfer',
+    paymentReference:
+      (paymentData.paymentReference || '').trim() ||
+      existing.paymentReference ||
+      `PAY-REF-${Date.now().toString().slice(-6)}`,
+    paymentStatus: safePaymentStatus,
     updatedAt: new Date().toISOString(),
   };
 
   const nextList = [...current];
   nextList[idx] = updated;
   await saveAppointmentsList(nextList);
+
+  if (updated.userUid || updated.patientEmail) {
+    try {
+      await deliverEmailAndNotificationToClient({
+        userUid: updated.userUid,
+        toEmail: updated.patientEmail,
+        toName: updated.patientName,
+        title: `Payment Submitted — Awaiting Admin Confirmation (${updated.appointmentNumber})`,
+        message: `We have received your payment submission (Ref: ${updated.paymentReference}, Method: ${updated.paymentMethod.toUpperCase()}) for Eye Appointment ${updated.appointmentNumber}. Our Admin team is verifying your payment before forwarding your booking to ${updated.doctorName}.`,
+        orderNumber: updated.appointmentNumber,
+      });
+    } catch {
+      // Ignore notification error
+    }
+  }
+
   return updated;
 }
+
 

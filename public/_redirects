@@ -1,0 +1,5 @@
+# If your PHP/MySQL backend is hosted on cPanel, uncomment the line below and set your domain:
+# /api/*  https://your-cpanel-domain.com/api/:splat  200!
+
+# React Single-Page Application (SPA) routing
+/*  /index.html  200

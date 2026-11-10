@@ -19,6 +19,7 @@ import {
   Calculator,
   Stethoscope,
   ArrowLeft,
+  Star,
 } from 'lucide-react';
 import {
   Product,
@@ -201,17 +202,93 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState('');
   const [isAboutMeOpen, setIsAboutMeOpen] = useState(false);
 
+  // Patient Review Submission State (for patients with delivered orders)
+  const [showReviewForm, setShowReviewForm] = useState(false);
+  const [reviewOrderNumber, setReviewOrderNumber] = useState('');
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [reviewFeedback, setReviewFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const deliveredUserOrders = useMemo(
+    () => orders.filter((o) => String(o.orderStatus || '').toLowerCase() === 'delivered'),
+    [orders]
+  );
+
+  useEffect(() => {
+    if (deliveredUserOrders.length > 0 && !reviewOrderNumber) {
+      setReviewOrderNumber(deliveredUserOrders[0].orderNumber);
+    }
+  }, [deliveredUserOrders, reviewOrderNumber]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 3500);
   };
 
+  const handleSubmitPatientReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setReviewFeedback(null);
+    if (!user || !idToken) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    if (deliveredUserOrders.length === 0) {
+      setReviewFeedback({
+        type: 'error',
+        message: 'Only patients who have ordered and received a Delivered order can submit a verified review.',
+      });
+      return;
+    }
+    if (!reviewComment.trim()) {
+      setReviewFeedback({ type: 'error', message: 'Please write your review experience before submitting.' });
+      return;
+    }
+    setIsSubmittingReview(true);
+    try {
+      const selectedOrder =
+        deliveredUserOrders.find((o) => o.orderNumber === reviewOrderNumber) || deliveredUserOrders[0];
+      const res = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          customerName: user.fullName || user.email,
+          customerRole: `Verified Patient · Delivered Order ${selectedOrder.orderNumber}`,
+          rating: reviewRating,
+          comment: reviewComment.trim(),
+          orderNumber: selectedOrder.orderNumber,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.review) {
+        setReviews((prev) => [data.review, ...prev]);
+        setReviewComment('');
+        setReviewRating(5);
+        setShowReviewForm(false);
+        setReviewFeedback({
+          type: 'success',
+          message: 'Thank you! Your verified patient review has been published.',
+        });
+        showToast('Your verified patient review has been published.');
+      } else {
+        setReviewFeedback({
+          type: 'error',
+          message: data.error || 'Could not submit review. Please ensure your order is marked Delivered.',
+        });
+      }
+    } catch {
+      setReviewFeedback({ type: 'error', message: 'Network error while submitting your review.' });
+    } finally {
+      setIsSubmittingReview(false);
+    }
+  };
+
   const fetchCatalog = async () => {
     try {
-      const [res, aptRes] = await Promise.all([
-        fetch('/api/catalog'),
-        fetch('/api/appointments'),
-      ]);
+      const res = await fetch('/api/catalog');
       if (res.ok) {
         const data = await res.json();
         setProducts(data.products || []);
@@ -222,12 +299,6 @@ export default function App() {
         setSiteConfig(data.siteConfig || {});
         if (data.siteConfig?.quickEstimatorDefaultLensCode) {
           setQuickEstimatorLensCode(data.siteConfig.quickEstimatorDefaultLensCode);
-        }
-      }
-      if (aptRes.ok) {
-        const aptList = await aptRes.json();
-        if (Array.isArray(aptList)) {
-          setAppointments(aptList);
         }
       }
       if (idToken) {
@@ -254,13 +325,7 @@ export default function App() {
         setWishlistIds(data.wishlistProductIds || []);
         setNotifications(data.notifications || []);
         setEnquiries(data.enquiries || []);
-        if (Array.isArray(data.appointments) && data.appointments.length > 0) {
-          setAppointments((prev) => {
-            const map = new Map<number, ClinicalAppointmentRecord>();
-            [...data.appointments, ...prev].forEach((a) => map.set(a.id, a));
-            return Array.from(map.values());
-          });
-        }
+        setAppointments(Array.isArray(data.appointments) ? data.appointments : []);
       }
     } catch {
       // Handled gracefully
@@ -294,13 +359,7 @@ export default function App() {
         setWishlistIds(data.wishlistProductIds || []);
         setNotifications(data.notifications || []);
         setEnquiries(data.enquiries || []);
-        if (Array.isArray(data.appointments) && data.appointments.length > 0) {
-          setAppointments((prev) => {
-            const map = new Map<number, ClinicalAppointmentRecord>();
-            [...data.appointments, ...prev].forEach((a) => map.set(a.id, a));
-            return Array.from(map.values());
-          });
-        }
+        setAppointments(Array.isArray(data.appointments) ? data.appointments : []);
         showToast(`Signed in as ${data.user.fullName || data.user.email}.`);
       }
     } catch {
@@ -368,6 +427,9 @@ export default function App() {
     setSavedPrescriptions([]);
     setSavedAddresses([]);
     setWishlistIds([]);
+    setNotifications([]);
+    setEnquiries([]);
+    setAppointments([]);
     setActiveView('home');
     showToast('Signed out of Vision Care.');
   };
@@ -536,7 +598,7 @@ export default function App() {
       {/* Mandatory 3-Zone Top Bar Contract */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4 lg:gap-8 px-3.5 sm:px-6 py-3 sm:py-4">
-          {/* Zone 1: Single text element wordmark */}
+          {/* Zone 1: Official Vision Care Logo + Brand Wordmark */}
           <a
             href="#top"
             onClick={(e) => {
@@ -544,9 +606,14 @@ export default function App() {
               setActiveView('home');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
-            className="text-lg sm:text-xl font-bold tracking-tight text-[#0B192C] whitespace-nowrap shrink-0 font-display"
+            className="flex items-center gap-2.5 sm:gap-3 text-lg sm:text-xl font-bold tracking-tight text-[#0B192C] whitespace-nowrap shrink-0 font-display group"
           >
-            VISION CARE
+            <img
+              src="/assets/aistudio/Vision_Care_Eyewear_Logo_31f9746e.png"
+              alt="Vision Care — Premium Eyewear & Optical Solutions Logo"
+              className="h-11 sm:h-14 w-auto object-contain rounded-lg bg-white px-1.5 py-0.5 border border-slate-200/80 shadow-2xs group-hover:border-[#C5A059] transition-colors"
+            />
+            <span className="hidden xl:inline-block">VISION CARE</span>
           </a>
 
           {/* Zone 2: 5 concise single-line text navigation links */}
@@ -734,8 +801,17 @@ export default function App() {
               <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-20">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-stretch">
                   <div className="lg:col-span-6 flex flex-col justify-center space-y-6">
-                    <div className="text-xs font-medium tracking-widest uppercase text-[#C5A059]">
-                      International Optical Atelier · Lagos & Abuja
+                    <div className="flex flex-wrap items-center gap-3.5">
+                      <div className="bg-white rounded-xl p-2 sm:p-2.5 border-2 border-[#C5A059]/60 shadow-lg shrink-0">
+                        <img
+                          src="/assets/aistudio/Vision_Care_Eyewear_Logo_31f9746e.png"
+                          alt="Vision Care Official Brand Logo"
+                          className="h-14 sm:h-16 w-auto object-contain"
+                        />
+                      </div>
+                      <div className="text-xs font-medium tracking-widest uppercase text-[#C5A059]">
+                        International Optical Atelier · Lagos & Abuja
+                      </div>
                     </div>
                     <h1
                       className="text-4xl sm:text-5xl lg:text-[3.5rem] font-semibold leading-[1.1] tracking-tight text-white"
@@ -866,21 +942,21 @@ export default function App() {
               </div>
             </section>
 
-            {/* SECTION 2: FEATURED & BEST-SELLING COLLECTION GRID (3-Column Desktop) */}
-            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-10">
+            {/* SECTION 2: FEATURED & BEST-SELLING COLLECTION GRID (5-Column Desktop Compact Layout) */}
+            <section className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 py-8 sm:py-12">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2.5 sm:gap-4 mb-4 sm:mb-6">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-widest text-[#1E40AF]">
                     Curated Optical Collection
                   </p>
-                  <h2 className="text-3xl sm:text-4xl font-semibold text-[#0B192C] mt-1">
+                  <h2 className="text-2xl sm:text-3xl font-semibold text-[#0B192C] mt-1">
                     Featured & Best-Selling Frames
                   </h2>
                 </div>
                 <button
                   type="button"
                   onClick={() => setActiveView('frames')}
-                  className="text-sm font-semibold text-[#1E40AF] hover:underline flex items-center gap-1.5"
+                  className="text-sm font-semibold text-[#1E40AF] hover:underline flex items-center gap-1.5 py-1 touch-manipulation"
                 >
                   <span>View Complete Frame Marketplace ({products.length})</span>
                   <ArrowRight className="w-4 h-4" />
@@ -888,16 +964,16 @@ export default function App() {
               </div>
 
               {loadingCatalog ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {[1, 2, 3, 4, 5, 6].map((n) => (
-                    <div key={n} className="h-96 rounded-2xl bg-slate-200/60 animate-pulse" />
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-x-2.5 gap-y-2.5 sm:gap-3.5">
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                    <div key={n} className="h-52 sm:h-56 rounded-xl bg-slate-200/60 animate-pulse" />
                   ))}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-x-2.5 gap-y-2.5 sm:gap-3.5">
                   {products
                     .filter((p) => p.category !== 'AI Glasses' && !p.sku.startsWith('VC-AI-'))
-                    .slice(0, 6)
+                    .slice(0, 10)
                     .map((prod) => {
                       let imgs: string[] = [];
                       let cols: string[] = [];
@@ -914,12 +990,12 @@ export default function App() {
                       return (
                         <div
                           key={prod.id}
-                          className="group bg-white rounded-2xl border border-slate-200/90 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md flex flex-col justify-between"
+                          className="group bg-white rounded-xl border border-slate-200/90 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md flex flex-col justify-between"
                         >
                           <div>
                             <div
                               onClick={() => setDetailProduct(prod)}
-                              className="aspect-[4/3] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
+                              className="aspect-[16/10] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
                             >
                               <OpticalImage
                                 src={imgs[0] || ''}
@@ -932,49 +1008,46 @@ export default function App() {
                                   e.stopPropagation();
                                   handleToggleWishlist(prod.id);
                                 }}
-                                className="absolute top-3 right-3 p-2 rounded-full bg-white/90 text-slate-700 hover:text-rose-600 shadow-xs"
+                                className="absolute top-1.5 right-1.5 w-8 h-8 flex items-center justify-center rounded-full bg-white/90 text-slate-700 hover:text-rose-600 shadow-xs touch-manipulation"
                                 title="Save to Wishlist"
                               >
-                                <Heart className={`w-4 h-4 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
+                                <Heart className={`w-3.5 h-3.5 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
                               </button>
                             </div>
 
-                            <div className="p-6">
-                              {/* Clean unboxed metadata with typographic separators */}
-                              <div className="flex items-center gap-2 text-xs text-slate-500 uppercase tracking-wider">
-                                <span>{prod.brand}</span>
+                            <div className="p-2.5 sm:p-3.5">
+                              <div className="flex items-center gap-1 text-[10px] text-slate-500 uppercase tracking-wider truncate">
+                                <span className="truncate">{prod.brand}</span>
                                 <span aria-hidden="true">·</span>
-                                <span>{prod.shape}</span>
-                                <span aria-hidden="true">·</span>
-                                <span>{prod.isNewArrival ? 'New Arrival' : 'In Stock'}</span>
+                                <span className="truncate">{prod.shape}</span>
                               </div>
 
-                              <div className="mt-2 flex items-baseline justify-between gap-2">
+                              <div className="mt-0.5 sm:mt-1 flex items-baseline justify-between gap-1.5">
                                 <h3
                                   onClick={() => setDetailProduct(prod)}
-                                  className="text-base font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF]"
+                                  className="text-xs sm:text-sm font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF] line-clamp-1"
                                 >
                                   {prod.name}
                                 </h3>
                                 <div className="text-right font-tabular shrink-0">
-                                  <span className="text-[15px] font-semibold text-[#0B192C]">
+                                  <span className="text-xs font-bold text-[#0B192C]">
                                     {formatNaira(effectivePrice)}
                                   </span>
                                   {prod.discountPriceNgn && (
-                                    <span className="block text-xs text-slate-400 line-through">
+                                    <span className="block text-[10px] text-slate-400 line-through">
                                       {formatNaira(prod.priceNgn)}
                                     </span>
                                   )}
                                 </div>
                               </div>
 
-                              <p className="text-xs text-slate-500 mt-1.5 font-tabular">
-                                {prod.material} · {prod.dimensions} · {cols.length} Colours
+                              <p className="text-[11px] text-slate-500 mt-0.5 font-tabular truncate">
+                                {prod.material} · {cols.length} Colours
                               </p>
                             </div>
                           </div>
 
-                          <div className="px-6 pb-6 pt-2 flex items-center gap-2.5">
+                          <div className="px-2.5 pb-2.5 pt-0.5 sm:px-3.5 sm:pb-3.5 sm:pt-1 flex items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => {
@@ -982,16 +1055,16 @@ export default function App() {
                                 setWizardInitialMode('prescription_glasses');
                                 setActiveView('wizard');
                               }}
-                              className="flex-1 py-2.5 px-3 bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0"
+                              className="flex-1 min-h-[38px] sm:min-h-[34px] py-1.5 px-2 bg-[#0B192C] hover:bg-[#162B49] active:scale-[0.99] text-white text-[11px] font-semibold rounded-lg transition-all truncate touch-manipulation"
                             >
-                              Select Lenses + Rx
+                              + Lenses &amp; Rx
                             </button>
                             <button
                               type="button"
                               onClick={() => setDetailProduct(prod)}
-                              className="py-2.5 px-3.5 border border-slate-300 hover:bg-slate-50 text-[#0B192C] text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0"
+                              className="min-h-[38px] sm:min-h-[34px] py-1.5 px-2.5 border border-slate-300 hover:bg-slate-50 active:scale-[0.99] text-[#0B192C] text-[11px] font-semibold rounded-lg transition-all shrink-0 touch-manipulation"
                             >
-                              Quick View
+                              View
                             </button>
                           </div>
                         </div>
@@ -1009,18 +1082,18 @@ export default function App() {
               if (aiGlassesList.length === 0) return null;
 
               return (
-                <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-                  <div className="bg-gradient-to-br from-[#0B192C] via-[#10233E] to-[#0B192C] text-white rounded-3xl p-6 sm:p-10 border border-slate-800 shadow-lg space-y-8">
-                    <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 border-b border-white/10 pb-6">
-                      <div className="space-y-2 max-w-2xl">
+                <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-12">
+                  <div className="bg-gradient-to-br from-[#0B192C] via-[#10233E] to-[#0B192C] text-white rounded-3xl p-5 sm:p-8 border border-slate-800 shadow-lg space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-white/10 pb-5">
+                      <div className="space-y-1.5 max-w-2xl">
                         <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-[#C5A059]">
                           <Sparkles className="w-4 h-4" />
                           <span>Smart Eyewear &amp; Wearable Optical Intelligence</span>
                         </div>
-                        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-semibold text-white">
+                        <h2 className="text-xl sm:text-2xl lg:text-3xl font-semibold text-white">
                           AI Smart Glasses — Prescription &amp; Non-Rx Ready
                         </h2>
-                        <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                        <p className="text-xs text-slate-300 leading-relaxed">
                           Experience hands-free POV cameras, open-ear directional speakers, real-time AI voice translation, and micro-HUD displays—custom-fitted by our optical laboratory with your Single Vision, Bifocal, Varilux Progressive, or 0.00 Blue-Cut / Photochromic lenses.
                         </p>
                       </div>
@@ -1032,7 +1105,7 @@ export default function App() {
                             setActiveView('ai_glasses');
                             window.scrollTo({ top: 0, behavior: 'smooth' });
                           }}
-                          className="px-5 py-3 bg-[#C5A059] hover:bg-[#b58e47] text-[#0B192C] text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
+                          className="px-4 py-2.5 bg-[#C5A059] hover:bg-[#b58e47] text-[#0B192C] text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
                         >
                           <span>Explore AI Smart Glasses ({aiGlassesList.length})</span>
                           <ArrowRight className="w-4 h-4" />
@@ -1040,8 +1113,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                      {aiGlassesList.slice(0, 3).map((prod) => {
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5">
+                      {aiGlassesList.slice(0, 5).map((prod) => {
                         let imgs: string[] = [];
                         let cols: string[] = [];
                         try {
@@ -1057,20 +1130,20 @@ export default function App() {
                         return (
                           <div
                             key={prod.id}
-                            className="bg-white/5 hover:bg-white/8 border border-white/15 rounded-2xl overflow-hidden flex flex-col justify-between transition-all"
+                            className="bg-white/5 hover:bg-white/8 border border-white/15 rounded-xl overflow-hidden flex flex-col justify-between transition-all"
                           >
                             <div>
                               <div
                                 onClick={() => setDetailProduct(prod)}
-                                className="aspect-[4/3] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
+                                className="aspect-[16/10] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
                               >
                                 <OpticalImage
                                   src={imgs[0] || ''}
                                   alt={prod.name}
                                   className="w-full h-full object-cover"
                                 />
-                                <span className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-[#0B192C]/90 text-[#C5A059] text-[10px] font-bold uppercase tracking-wider border border-[#C5A059]/40">
-                                  AI Smart Glasses · Rx Ready
+                                <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-[#0B192C]/90 text-[#C5A059] text-[9px] font-bold uppercase tracking-wider border border-[#C5A059]/40">
+                                  AI · Rx Ready
                                 </span>
                                 <button
                                   type="button"
@@ -1078,47 +1151,42 @@ export default function App() {
                                     e.stopPropagation();
                                     handleToggleWishlist(prod.id);
                                   }}
-                                  className="absolute top-3 right-3 p-2 rounded-full bg-white/90 text-slate-700 hover:text-rose-600 shadow-xs cursor-pointer"
+                                  className="absolute top-2 right-2 p-1.5 rounded-full bg-white/90 text-slate-700 hover:text-rose-600 shadow-xs cursor-pointer"
                                   title="Save to Wishlist"
                                 >
-                                  <Heart className={`w-4 h-4 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
+                                  <Heart className={`w-3.5 h-3.5 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
                                 </button>
                               </div>
 
-                              <div className="p-5 space-y-2">
-                                <div className="flex items-center gap-2 text-[11px] text-[#C5A059] uppercase tracking-wider font-semibold">
-                                  <span>{prod.brand}</span>
+                              <div className="p-3.5 space-y-1">
+                                <div className="flex items-center gap-1.5 text-[10px] text-[#C5A059] uppercase tracking-wider font-semibold truncate">
+                                  <span className="truncate">{prod.brand}</span>
                                   <span>·</span>
                                   <span>{prod.shape}</span>
                                 </div>
 
-                                <div className="flex items-baseline justify-between gap-2">
+                                <div className="flex items-baseline justify-between gap-1.5">
                                   <h3
                                     onClick={() => setDetailProduct(prod)}
-                                    className="text-base font-semibold text-white cursor-pointer hover:text-[#C5A059]"
+                                    className="text-xs sm:text-sm font-semibold text-white cursor-pointer hover:text-[#C5A059] line-clamp-1"
                                   >
                                     {prod.name}
                                   </h3>
                                   <div className="text-right font-tabular shrink-0">
-                                    <span className="text-sm font-bold text-[#C5A059]">
+                                    <span className="text-xs font-bold text-[#C5A059]">
                                       {formatNaira(effectivePrice)}
                                     </span>
-                                    {prod.discountPriceNgn && (
-                                      <span className="block text-[11px] text-slate-400 line-through">
-                                        {formatNaira(prod.priceNgn)}
-                                      </span>
-                                    )}
                                   </div>
                                 </div>
 
-                                <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
+                                <p className="text-[11px] text-slate-300 line-clamp-2 leading-snug">
                                   {prod.description}
                                 </p>
                               </div>
                             </div>
 
-                            <div className="px-5 pb-5 pt-2 flex flex-col gap-2">
-                              <div className="flex items-center gap-2">
+                            <div className="px-3.5 pb-3.5 pt-1 flex flex-col gap-1.5">
+                              <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1126,16 +1194,16 @@ export default function App() {
                                     setWizardInitialMode('prescription_glasses');
                                     setActiveView('wizard');
                                   }}
-                                  className="flex-1 py-2.5 px-3 bg-[#C5A059] hover:bg-[#b58e47] text-[#0B192C] text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                                  className="flex-1 py-1.5 px-2 bg-[#C5A059] hover:bg-[#b58e47] text-[#0B192C] text-[11px] font-bold rounded-lg transition-colors cursor-pointer truncate"
                                 >
-                                  Fit Prescription Lenses + Rx
+                                  Fit Lenses + Rx
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => setDetailProduct(prod)}
-                                  className="py-2.5 px-3 bg-white/10 hover:bg-white/20 text-white border border-white/15 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                                  className="py-1.5 px-2 bg-white/10 hover:bg-white/20 text-white border border-white/15 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
                                 >
-                                  Quick View
+                                  View
                                 </button>
                               </div>
 
@@ -1161,9 +1229,9 @@ export default function App() {
                                     unitTotalNgn: effectivePrice,
                                   });
                                 }}
-                                className="w-full py-2 px-3 bg-white/5 hover:bg-white/15 text-slate-200 border border-white/10 text-xs font-medium rounded-lg transition-colors cursor-pointer"
+                                className="w-full py-1.5 px-2 bg-white/5 hover:bg-white/15 text-slate-200 border border-white/10 text-[10px] font-medium rounded-lg transition-colors cursor-pointer truncate"
                               >
-                                Buy AI Glasses Without Rx ({formatNaira(effectivePrice)})
+                                Buy Non-Rx ({formatNaira(effectivePrice)})
                               </button>
                             </div>
                           </div>
@@ -1216,37 +1284,213 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Attributable Clinical Testimonials */}
-                <div className="pt-12 border-t border-slate-100">
-                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+                {/* Verified Patient Outcomes & Delivered-Order Reviews */}
+                <div className="pt-12 border-t border-slate-100 space-y-6">
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-widest text-[#1E40AF]">
                         Verified Patient Outcomes
                       </p>
-                      <h2 className="text-3xl font-semibold text-[#0B192C] mt-1">
-                        Trusted by Nigerian Professionals & Clinicians
+                      <h2 className="text-2xl sm:text-3xl font-semibold text-[#0B192C] mt-1">
+                        Patient Reviews from Verified Delivered Orders
                       </h2>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Real feedback from patients who ordered and received their prescription frames &amp; optical lenses.
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-500 font-tabular">
-                      99.4% Prescription Accuracy · 48-Hour Lagos & Abuja Express Dispatch
-                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReviewFeedback(null);
+                          setShowReviewForm((prev) => !prev);
+                        }}
+                        className="px-4 py-2.5 rounded-xl bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        {showReviewForm ? 'Close Review Form' : 'Write a Patient Review'}
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {reviews.slice(0, 3).map((rev) => (
-                      <div
-                        key={rev.id}
-                        className="p-6 rounded-2xl bg-[#FAF9F6] border border-slate-200/80 flex flex-col justify-between space-y-4"
-                      >
-                        <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
-                          “{rev.comment}”
-                        </p>
-                        <div className="pt-3 border-t border-slate-200/60">
-                          <p className="text-sm font-semibold text-[#0B192C]">{rev.customerName}</p>
-                          <p className="text-xs text-slate-500">{rev.customerRole}</p>
+                  {reviewFeedback && (
+                    <div
+                      className={`p-3.5 rounded-xl border text-xs font-medium ${
+                        reviewFeedback.type === 'success'
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-amber-50 border-amber-200 text-amber-900'
+                      }`}
+                    >
+                      {reviewFeedback.message}
+                    </div>
+                  )}
+
+                  {showReviewForm && (
+                    <div className="p-5 rounded-2xl bg-[#FAF9F6] border border-slate-200/90 space-y-4">
+                      {!user ? (
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <p className="text-sm font-semibold text-[#0B192C]">
+                              Sign in to submit your Verified Patient Review
+                            </p>
+                            <p className="text-xs text-slate-600">
+                              Patients who have ordered and received their order (marked Delivered) can publish a verified review here.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setIsAuthModalOpen(true)}
+                            className="px-4 py-2.5 bg-[#1E40AF] hover:bg-[#1E3A8A] text-white text-xs font-semibold rounded-xl shrink-0 cursor-pointer"
+                          >
+                            Sign In / Create Account
+                          </button>
                         </div>
-                      </div>
-                    ))}
+                      ) : deliveredUserOrders.length === 0 ? (
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <p className="text-sm font-semibold text-[#0B192C]">
+                              Verified Review Eligibility — Delivered Order Required
+                            </p>
+                            <p className="text-xs text-slate-600">
+                              Hi {user.fullName || user.email}, only patients who have ordered and gotten their order delivered can post a review. Once your order status reaches <span className="font-semibold text-emerald-700">Delivered</span>, you can submit your review right here.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setActiveView('account')}
+                            className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-[#0B192C] text-xs font-semibold rounded-xl shrink-0 cursor-pointer"
+                          >
+                            Check My Order Status
+                          </button>
+                        </div>
+                      ) : (
+                        <form onSubmit={handleSubmitPatientReview} className="space-y-4">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-[#0B192C]">
+                                Share Your Verified Patient Experience
+                              </h3>
+                              <p className="text-xs text-slate-500">
+                                Posting as <span className="font-semibold text-[#0B192C]">{user.fullName || user.email}</span>
+                              </p>
+                            </div>
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Eligible · Delivered Order Verified</span>
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                                Select Delivered Order
+                              </label>
+                              <select
+                                value={reviewOrderNumber}
+                                onChange={(e) => setReviewOrderNumber(e.target.value)}
+                                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white"
+                              >
+                                {deliveredUserOrders.map((ord) => (
+                                  <option key={ord.id} value={ord.orderNumber}>
+                                    Order {ord.orderNumber} — Delivered ({formatNaira(ord.totalNgn)})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                                Star Rating
+                              </label>
+                              <div className="flex items-center gap-1.5 pt-1">
+                                {[1, 2, 3, 4, 5].map((star) => (
+                                  <button
+                                    key={star}
+                                    type="button"
+                                    onClick={() => setReviewRating(star)}
+                                    className="p-1 cursor-pointer"
+                                  >
+                                    <Star
+                                      className={`w-5 h-5 ${
+                                        star <= reviewRating
+                                          ? 'fill-amber-400 text-amber-400'
+                                          : 'text-slate-300'
+                                      }`}
+                                    />
+                                  </button>
+                                ))}
+                                <span className="text-xs font-semibold text-slate-700 ml-1">
+                                  {reviewRating}.0 / 5.0
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                              Your Review (Frame Quality, Prescription Accuracy &amp; Delivery)
+                            </label>
+                            <textarea
+                              rows={3}
+                              required
+                              value={reviewComment}
+                              onChange={(e) => setReviewComment(e.target.value)}
+                              placeholder="Tell other patients how your prescription lenses and frames feel..."
+                              className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white"
+                            />
+                          </div>
+
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowReviewForm(false)}
+                              className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={isSubmittingReview}
+                              className="px-5 py-2 rounded-lg bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                            >
+                              {isSubmittingReview ? 'Publishing Review...' : 'Submit Verified Review'}
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {reviews
+                      .filter((rev) => rev.isApproved !== false)
+                      .map((rev) => (
+                        <div
+                          key={rev.id}
+                          className="p-6 rounded-2xl bg-[#FAF9F6] border border-slate-200/80 flex flex-col justify-between space-y-4"
+                        >
+                          <div className="space-y-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-0.5 text-amber-400">
+                                {Array.from({ length: Math.max(1, Math.min(5, Number(rev.rating) || 5)) }).map(
+                                  (_, i) => (
+                                    <Star key={i} className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                                  )
+                                )}
+                              </div>
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                Verified Patient
+                              </span>
+                            </div>
+                            <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
+                              “{rev.comment}”
+                            </p>
+                          </div>
+                          <div className="pt-3 border-t border-slate-200/60">
+                            <p className="text-sm font-semibold text-[#0B192C]">{rev.customerName}</p>
+                            <p className="text-xs text-slate-500">{rev.customerRole}</p>
+                          </div>
+                        </div>
+                      ))}
                   </div>
                 </div>
 
@@ -1414,21 +1658,21 @@ export default function App() {
 
         {/* VIEW 2: FULL FRAMES MARKETPLACE */}
         {activeView === 'frames' && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
-            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 border-b border-slate-200 pb-6">
+          <div className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 py-5 sm:py-9 space-y-4 sm:space-y-6">
+            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-3 sm:gap-4 border-b border-slate-200 pb-4 sm:pb-6">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest text-[#1E40AF]">
                   Complete Optical Marketplace
                 </p>
-                <h1 className="text-3xl sm:text-4xl font-semibold text-[#0B192C] mt-1">
+                <h1 className="text-2xl sm:text-4xl font-semibold text-[#0B192C] mt-0.5 sm:mt-1">
                   Shop Eyewear Frames
                 </h1>
-                <p className="text-sm text-slate-600 mt-1">
-                  Purchase frames alone or click "Select Lenses + Rx" on any frame to customize with prescription or protective lenses.
+                <p className="text-xs sm:text-sm text-slate-600 mt-1">
+                  Purchase frames alone or click "+ Lenses &amp; Rx" on any frame to customize with prescription or protective lenses.
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <div className="relative flex-1 sm:flex-initial">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
@@ -1436,13 +1680,13 @@ export default function App() {
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search frame or brand..."
-                    className="w-full sm:w-56 pl-9 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-xs"
+                    className="w-full sm:w-56 min-h-[38px] pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-xs"
                   />
                 </div>
                 <select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value as any)}
-                  className="bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-medium"
+                  className="min-h-[38px] bg-white border border-slate-300 rounded-lg px-2.5 sm:px-3 py-2 text-xs font-medium touch-manipulation"
                 >
                   <option value="featured">Sort: Featured</option>
                   <option value="bestselling">Sort: Best-Selling</option>
@@ -1453,14 +1697,14 @@ export default function App() {
               </div>
             </div>
 
-            {/* Filter Controls Bar */}
-            <div className="bg-white p-5 rounded-xl border border-slate-200 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 text-xs">
+            {/* Filter Controls Bar — Compact 2-Column Mobile Grid */}
+            <div className="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3.5 text-xs">
               <div>
-                <label className="block font-semibold text-slate-600 mb-1">Category / Gender</label>
+                <label className="block font-semibold text-slate-600 mb-1 truncate">Category / Gender</label>
                 <select
                   value={filterGender}
                   onChange={(e) => setFilterGender(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 bg-white"
+                  className="w-full min-h-[38px] border border-slate-300 rounded-lg px-2 py-1.5 bg-white touch-manipulation"
                 >
                   <option value="ALL">All Categories</option>
                   <option value="Men">Men's Frames</option>
@@ -1474,11 +1718,11 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-600 mb-1">Frame Shape</label>
+                <label className="block font-semibold text-slate-600 mb-1 truncate">Frame Shape</label>
                 <select
                   value={filterShape}
                   onChange={(e) => setFilterShape(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 bg-white"
+                  className="w-full min-h-[38px] border border-slate-300 rounded-lg px-2 py-1.5 bg-white touch-manipulation"
                 >
                   <option value="ALL">All Shapes</option>
                   <option value="Round">Round Frames</option>
@@ -1490,11 +1734,11 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-600 mb-1">Rim Architecture</label>
+                <label className="block font-semibold text-slate-600 mb-1 truncate">Rim Architecture</label>
                 <select
                   value={filterRim}
                   onChange={(e) => setFilterRim(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 bg-white"
+                  className="w-full min-h-[38px] border border-slate-300 rounded-lg px-2 py-1.5 bg-white touch-manipulation"
                 >
                   <option value="ALL">All Rim Styles</option>
                   <option value="Full-Rim">Full-Rim Frames</option>
@@ -1504,11 +1748,11 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-600 mb-1">Material</label>
+                <label className="block font-semibold text-slate-600 mb-1 truncate">Material</label>
                 <select
                   value={filterMaterial}
                   onChange={(e) => setFilterMaterial(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 bg-white"
+                  className="w-full min-h-[38px] border border-slate-300 rounded-lg px-2 py-1.5 bg-white touch-manipulation"
                 >
                   <option value="ALL">All Materials</option>
                   <option value="Italian Acetate">Italian Acetate</option>
@@ -1519,8 +1763,8 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-600 mb-1 font-tabular">
-                  Max Price: {formatNaira(filterMaxPrice)}
+                <label className="block font-semibold text-slate-600 mb-1 font-tabular truncate">
+                  Max: {formatNaira(filterMaxPrice)}
                 </label>
                 <input
                   type="range"
@@ -1529,7 +1773,7 @@ export default function App() {
                   step={5000}
                   value={filterMaxPrice}
                   onChange={(e) => setFilterMaxPrice(Number(e.target.value))}
-                  className="w-full accent-[#1E40AF] mt-2"
+                  className="w-full accent-[#1E40AF] mt-2 touch-manipulation"
                 />
               </div>
 
@@ -1544,7 +1788,7 @@ export default function App() {
                     setFilterMaxPrice(650000);
                     setSearchQuery('');
                   }}
-                  className="w-full py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 font-semibold cursor-pointer"
+                  className="w-full min-h-[38px] py-1.5 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 active:scale-[0.99] font-semibold cursor-pointer touch-manipulation"
                 >
                   Reset Filters
                 </button>
@@ -1606,11 +1850,11 @@ export default function App() {
               return (
                 <>
                   {estimatorEnabled && (
-                    <div className="bg-gradient-to-br from-[#0B192C] via-[#132847] to-[#0B192C] text-white rounded-2xl p-5 sm:p-6 border border-slate-800 shadow-sm space-y-4">
-                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-4">
-                        <div className="flex items-start sm:items-center gap-3">
-                          <div className="p-2.5 rounded-xl bg-[#C5A059]/15 border border-[#C5A059]/30 text-[#C5A059] shrink-0">
-                            <Calculator className="w-5 h-5" />
+                    <div className="bg-gradient-to-br from-[#0B192C] via-[#132847] to-[#0B192C] text-white rounded-2xl p-3.5 sm:p-6 border border-slate-800 shadow-sm space-y-3 sm:space-y-4">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-3 border-b border-white/10 pb-3 sm:pb-4">
+                        <div className="flex items-start sm:items-center gap-2.5 sm:gap-3">
+                          <div className="p-2 sm:p-2.5 rounded-xl bg-[#C5A059]/15 border border-[#C5A059]/30 text-[#C5A059] shrink-0">
+                            <Calculator className="w-4 h-4 sm:w-5 sm:h-5" />
                           </div>
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
@@ -1621,18 +1865,18 @@ export default function App() {
                                 Instant Complete Pair Preview
                               </span>
                             </div>
-                            <h2 className="text-base sm:text-lg font-semibold text-white mt-0.5">
+                            <h2 className="text-sm sm:text-lg font-semibold text-white mt-0.5">
                               {siteConfig.quickEstimatorHeadline ||
                                 'Toggle Lens Types (Standard vs. Varilux) to See Complete Price Before Entering the Wizard'}
                             </h2>
                           </div>
                         </div>
 
-                        <div className="bg-white/10 border border-white/15 rounded-xl px-4 py-2.5 text-xs shrink-0 self-start lg:self-auto">
+                        <div className="bg-white/10 border border-white/15 rounded-xl px-3.5 py-2 sm:px-4 sm:py-2.5 text-xs shrink-0 self-start lg:self-auto">
                           <span className="text-[10px] uppercase tracking-wider text-slate-300 block">
                             Selected Lens Package Add-on
                           </span>
-                          <span className="text-sm font-tabular font-semibold text-[#C5A059]">
+                          <span className="text-xs sm:text-sm font-tabular font-semibold text-[#C5A059]">
                             {addedOpticalCost === 0
                               ? 'Frame Chassis Only (+₦0)'
                               : `+${formatNaira(addedOpticalCost)} (${selectedQuickLens?.label}${
@@ -1649,7 +1893,7 @@ export default function App() {
                         <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-300">
                           1. Select Lens Type to Estimate Complete Price Across All Frames:
                         </span>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5 sm:gap-2">
                           {quickLensChoices.map((lensOpt) => {
                             const isSelected = selectedQuickLens?.code === lensOpt.code;
                             return (
@@ -1657,15 +1901,15 @@ export default function App() {
                                 key={lensOpt.code}
                                 type="button"
                                 onClick={() => setQuickEstimatorLensCode(lensOpt.code)}
-                                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                                className={`p-2 sm:p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between touch-manipulation ${
                                   isSelected
                                     ? 'bg-[#C5A059] text-[#0B192C] border-[#C5A059] shadow-sm font-semibold'
                                     : 'bg-white/5 hover:bg-white/10 text-white border-white/10'
                                 }`}
                               >
-                                <span className="text-xs leading-snug block">{lensOpt.label}</span>
+                                <span className="text-[11px] sm:text-xs leading-snug block">{lensOpt.label}</span>
                                 <span
-                                  className={`text-[11px] font-tabular mt-1.5 block ${
+                                  className={`text-[10px] sm:text-[11px] font-tabular mt-1 sm:mt-1.5 block ${
                                     isSelected ? 'text-[#0B192C] font-bold' : 'text-[#C5A059]'
                                   }`}
                                 >
@@ -1688,7 +1932,7 @@ export default function App() {
                               Dynamic {selectedQuickLens?.label} Coating Rates
                             </span>
                           </div>
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                             {quickCoatingChoices.map((coatOpt) => {
                               const isSelected = selectedQuickCoating?.code === coatOpt.code;
                               return (
@@ -1696,7 +1940,7 @@ export default function App() {
                                   key={coatOpt.code}
                                   type="button"
                                   onClick={() => setQuickEstimatorCoatingCode(coatOpt.code)}
-                                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+                                  className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer touch-manipulation ${
                                     isSelected
                                       ? 'bg-[#1E40AF] text-white border-sky-400'
                                       : 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10'
@@ -1728,44 +1972,34 @@ export default function App() {
                     defaultExpanded={false}
                   />
 
-                  {/* Product Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                  {/* Product Grid — 5 in a Row on Desktop with Compact Mobile Vertical Spacing */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-x-2.5 gap-y-2.5 sm:gap-x-3.5 sm:gap-y-3.5">
                     {loadingCatalog
-                      ? Array.from({ length: 6 }).map((_, idx) => (
+                      ? Array.from({ length: 10 }).map((_, idx) => (
                           <div
                             key={`frame-skeleton-${idx}`}
-                            className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between animate-pulse"
+                            className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between animate-pulse"
                           >
                             <div>
-                              <div className="aspect-[4/3] bg-slate-200/80 relative">
-                                <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80" />
+                              <div className="aspect-[16/10] bg-slate-200/80 relative">
+                                <div className="absolute top-1.5 right-1.5 w-7 h-7 rounded-full bg-white/80" />
                               </div>
-                              <div className="p-6 space-y-3">
-                                <div className="h-3 w-2/5 bg-slate-200 rounded" />
-                                <div className="flex items-center justify-between gap-2 pt-1">
-                                  <div className="h-5 w-3/5 bg-slate-200 rounded" />
-                                  <div className="h-5 w-20 bg-slate-200 rounded" />
+                              <div className="p-2.5 sm:p-3.5 space-y-1.5 sm:space-y-2">
+                                <div className="h-2.5 w-2/5 bg-slate-200 rounded" />
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="h-3.5 w-3/5 bg-slate-200 rounded" />
+                                  <div className="h-3.5 w-14 bg-slate-200 rounded" />
                                 </div>
-                                <div className="h-3 w-2/3 bg-slate-200 rounded" />
-                                <div className="space-y-1.5 pt-1">
-                                  <div className="h-3 w-full bg-slate-200 rounded" />
-                                  <div className="h-3 w-4/5 bg-slate-200 rounded" />
-                                </div>
-                                <div className="mt-4 p-3 rounded-xl bg-slate-100 border border-slate-200/80 space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <div className="h-3 w-1/2 bg-slate-200 rounded" />
-                                    <div className="h-4 w-20 bg-slate-200 rounded" />
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <div className="h-2.5 w-2/5 bg-slate-200 rounded" />
-                                    <div className="h-2.5 w-16 bg-slate-200 rounded" />
-                                  </div>
+                                <div className="h-2.5 w-2/3 bg-slate-200 rounded" />
+                                <div className="p-1.5 sm:p-2 rounded-lg bg-slate-100 border border-slate-200/80 space-y-1">
+                                  <div className="h-2.5 w-full bg-slate-200 rounded" />
+                                  <div className="h-2 w-2/3 bg-slate-200 rounded" />
                                 </div>
                               </div>
                             </div>
-                            <div className="px-6 pb-6 pt-2 flex items-center gap-2.5">
-                              <div className="flex-1 h-10 bg-slate-200 rounded-lg" />
-                              <div className="w-24 h-10 bg-slate-200 rounded-lg" />
+                            <div className="px-2.5 pb-2.5 pt-0.5 sm:px-3.5 sm:pb-3.5 sm:pt-1 flex items-center gap-1.5">
+                              <div className="flex-1 h-8 bg-slate-200 rounded-lg" />
+                              <div className="w-14 h-8 bg-slate-200 rounded-lg" />
                             </div>
                           </div>
                         ))
@@ -1786,12 +2020,12 @@ export default function App() {
                       return (
                         <div
                           key={prod.id}
-                          className="group bg-white rounded-2xl border border-slate-200 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md flex flex-col justify-between"
+                          className="group bg-white rounded-xl border border-slate-200 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md flex flex-col justify-between"
                         >
                           <div>
                             <div
                               onClick={() => setDetailProduct(prod)}
-                              className="aspect-[4/3] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
+                              className="aspect-[16/10] bg-[#F4F3EF] overflow-hidden cursor-pointer relative"
                             >
                               <OpticalImage
                                 src={imgs[0] || ''}
@@ -1804,65 +2038,57 @@ export default function App() {
                                   e.stopPropagation();
                                   handleToggleWishlist(prod.id);
                                 }}
-                                className="absolute top-3 right-3 p-2 rounded-full bg-white/90 text-slate-700 hover:text-rose-600"
+                                className="absolute top-1.5 right-1.5 w-8 h-8 flex items-center justify-center rounded-full bg-white/90 text-slate-700 hover:text-rose-600 shadow-xs touch-manipulation"
+                                title="Save to Wishlist"
                               >
-                                <Heart className={`w-4 h-4 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
+                                <Heart className={`w-3.5 h-3.5 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
                               </button>
                             </div>
 
-                            <div className="p-6">
-                              <div className="flex items-center gap-2 text-xs text-slate-500 uppercase tracking-wider">
-                                <span>{prod.brand}</span>
+                            <div className="p-2.5 sm:p-3.5">
+                              <div className="flex items-center gap-1 text-[10px] text-slate-500 uppercase tracking-wider truncate">
+                                <span className="truncate">{prod.brand}</span>
                                 <span>·</span>
                                 <span>{prod.gender}</span>
-                                <span>·</span>
-                                <span>{prod.rimStyle}</span>
+                                <span className="hidden sm:inline">·</span>
+                                <span className="hidden sm:inline">{prod.rimStyle}</span>
                               </div>
 
-                              <div className="mt-2 flex items-baseline justify-between gap-2">
+                              <div className="mt-0.5 sm:mt-1 flex items-baseline justify-between gap-1.5">
                                 <h3
                                   onClick={() => setDetailProduct(prod)}
-                                  className="text-base font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF]"
+                                  className="text-xs sm:text-sm font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF] line-clamp-1"
                                 >
                                   {prod.name}
                                 </h3>
-                                <span className="text-[15px] font-tabular font-semibold text-[#0B192C]">
+                                <span className="text-xs font-tabular font-bold text-[#0B192C] shrink-0">
                                   {formatNaira(effectivePrice)}
                                 </span>
                               </div>
 
-                              <p className="text-xs text-slate-500 mt-1 font-tabular">
-                                {prod.shape} · {prod.material} · {prod.dimensions}
+                              <p className="text-[11px] text-slate-500 mt-0.5 font-tabular truncate">
+                                {prod.shape} · {prod.material}
                               </p>
-                              <p className="text-xs text-slate-600 mt-2 line-clamp-2">{prod.description}</p>
 
                               {/* Quick Cost Estimator Live Breakdown Badge on Card */}
                               <div
                                 onClick={() => setDetailProduct(prod)}
-                                className="mt-4 p-3 rounded-xl bg-[#FAF9F6] border border-slate-200/90 hover:border-[#1E40AF]/40 cursor-pointer transition-colors space-y-1"
+                                className="mt-1.5 sm:mt-2 p-1.5 sm:p-2 rounded-lg bg-[#FAF9F6] border border-slate-200/90 hover:border-[#1E40AF]/40 cursor-pointer transition-colors space-y-0.5"
                               >
-                                <div className="flex items-center justify-between text-[11px]">
-                                  <span className="font-semibold text-[#1E40AF] flex items-center gap-1">
-                                    <Calculator className="w-3 h-3" />
-                                    <span>Est. Total with {selectedQuickLens?.label}</span>
+                                <div className="flex items-center justify-between text-[10px] gap-1">
+                                  <span className="font-semibold text-[#1E40AF] flex items-center gap-1 truncate">
+                                    <Calculator className="w-2.5 h-2.5 shrink-0" />
+                                    <span className="truncate">+{selectedQuickLens?.label}</span>
                                   </span>
-                                  <span className="font-tabular font-bold text-[#0B192C] text-sm">
+                                  <span className="font-tabular font-bold text-[#0B192C] text-[10px] sm:text-[11px] shrink-0">
                                     {formatNaira(estimatedCompletePrice)}
-                                  </span>
-                                </div>
-                                <div className="flex items-center justify-between text-[10px] text-slate-500 font-tabular">
-                                  <span>
-                                    Frame {formatNaira(effectivePrice)} + Lens {formatNaira(addedOpticalCost)}
-                                  </span>
-                                  <span className="text-[#1E40AF] font-sans font-medium hover:underline">
-                                    Toggle lenses →
                                   </span>
                                 </div>
                               </div>
                             </div>
                           </div>
 
-                          <div className="px-6 pb-6 pt-2 flex items-center gap-2.5">
+                          <div className="px-2.5 pb-2.5 pt-0.5 sm:px-3.5 sm:pb-3.5 sm:pt-1 flex items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => {
@@ -1874,9 +2100,9 @@ export default function App() {
                                 );
                                 setActiveView('wizard');
                               }}
-                              className="flex-1 py-2.5 px-3 bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold rounded-lg"
+                              className="flex-1 min-h-[38px] sm:min-h-[34px] py-1.5 px-2 bg-[#0B192C] hover:bg-[#162B49] active:scale-[0.99] text-white text-[11px] font-semibold rounded-lg truncate transition-all touch-manipulation"
                             >
-                              Select Lenses + Rx ({formatNaira(estimatedCompletePrice)})
+                              + Lenses &amp; Rx
                             </button>
                             <button
                               type="button"
@@ -1900,9 +2126,9 @@ export default function App() {
                                   unitTotalNgn: effectivePrice,
                                 });
                               }}
-                              className="py-2.5 px-3.5 border border-slate-300 hover:bg-slate-50 text-[#0B192C] text-xs font-semibold rounded-lg"
+                              className="min-h-[38px] sm:min-h-[34px] py-1.5 px-2.5 border border-slate-300 hover:bg-slate-50 active:scale-[0.99] text-[#0B192C] text-[11px] font-semibold rounded-lg shrink-0 transition-all touch-manipulation"
                             >
-                              Frame Only
+                              Frame
                             </button>
                           </div>
                         </div>
@@ -1972,40 +2198,31 @@ export default function App() {
               ))}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5">
               {loadingCatalog
-                ? Array.from({ length: 6 }).map((_, idx) => (
+                ? Array.from({ length: 10 }).map((_, idx) => (
                     <div
                       key={`ai-glasses-skeleton-${idx}`}
-                      className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between shadow-xs animate-pulse"
+                      className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between shadow-xs animate-pulse"
                     >
                       <div>
-                        <div className="aspect-[4/3] bg-slate-200/80 relative">
-                          <div className="absolute top-3 left-3 w-36 h-6 rounded-lg bg-slate-300/80" />
-                          <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80" />
+                        <div className="aspect-[16/10] bg-slate-200/80 relative">
+                          <div className="absolute top-2 left-2 w-24 h-4 rounded bg-slate-300/80" />
+                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-white/80" />
                         </div>
-                        <div className="p-6 space-y-3">
-                          <div className="h-3 w-1/2 bg-slate-200 rounded" />
+                        <div className="p-3.5 space-y-2">
+                          <div className="h-2.5 w-1/2 bg-slate-200 rounded" />
                           <div className="flex items-center justify-between gap-2">
-                            <div className="h-5 w-3/5 bg-slate-200 rounded" />
-                            <div className="h-5 w-20 bg-slate-200 rounded" />
+                            <div className="h-3.5 w-3/5 bg-slate-200 rounded" />
+                            <div className="h-3.5 w-14 bg-slate-200 rounded" />
                           </div>
-                          <div className="h-3 w-3/4 bg-slate-200 rounded" />
-                          <div className="space-y-1.5 pt-1">
-                            <div className="h-3 w-full bg-slate-200 rounded" />
-                            <div className="h-3 w-5/6 bg-slate-200 rounded" />
-                            <div className="h-3 w-2/3 bg-slate-200 rounded" />
-                          </div>
+                          <div className="h-2.5 w-full bg-slate-200 rounded" />
                         </div>
                       </div>
-                      <div className="px-6 pb-6 pt-2 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-10 bg-slate-200 rounded-lg" />
-                          <div className="w-24 h-10 bg-slate-200 rounded-lg" />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="h-8 bg-slate-200 rounded-lg" />
-                          <div className="h-8 bg-slate-200 rounded-lg" />
+                      <div className="px-3.5 pb-3.5 pt-1 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex-1 h-7 bg-slate-200 rounded-lg" />
+                          <div className="w-14 h-7 bg-slate-200 rounded-lg" />
                         </div>
                       </div>
                     </div>
@@ -2036,16 +2253,16 @@ export default function App() {
                   return (
                     <div
                       key={prod.id}
-                      className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between shadow-xs hover:shadow-md transition-all"
+                      className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between shadow-xs hover:shadow-md transition-all"
                     >
                       <div>
                         <div
                           onClick={() => setDetailProduct(prod)}
-                          className="aspect-[4/3] bg-[#F4F3EF] overflow-hidden relative cursor-pointer"
+                          className="aspect-[16/10] bg-[#F4F3EF] overflow-hidden relative cursor-pointer"
                         >
                           <OpticalImage src={imgs[0] || ''} alt={prod.name} className="w-full h-full object-cover" />
-                          <span className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-[#0B192C]/90 text-[#C5A059] text-[10px] font-bold uppercase tracking-wider">
-                            AI Smart Eyewear · Rx Ready
+                          <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-[#0B192C]/90 text-[#C5A059] text-[9px] font-bold uppercase tracking-wider">
+                            AI · Rx Ready
                           </span>
                           <button
                             type="button"
@@ -2053,43 +2270,35 @@ export default function App() {
                               e.stopPropagation();
                               handleToggleWishlist(prod.id);
                             }}
-                            className="absolute top-3 right-3 p-2 rounded-full bg-white/90 text-slate-700 hover:text-rose-600 cursor-pointer"
+                            className="absolute top-2 right-2 p-1.5 rounded-full bg-white/90 text-slate-700 hover:text-rose-600 cursor-pointer"
                           >
-                            <Heart className={`w-4 h-4 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
+                            <Heart className={`w-3.5 h-3.5 ${wishlisted ? 'fill-rose-600 text-rose-600' : ''}`} />
                           </button>
                         </div>
 
-                        <div className="p-6 space-y-2">
-                          <div className="text-xs text-[#1E40AF] font-semibold uppercase tracking-wider">
-                            {prod.brand} · {prod.shape} · {prod.material}
+                        <div className="p-3.5 space-y-1">
+                          <div className="text-[10px] text-[#1E40AF] font-semibold uppercase tracking-wider truncate">
+                            {prod.brand} · {prod.shape}
                           </div>
-                          <div className="flex items-baseline justify-between gap-2">
+                          <div className="flex items-baseline justify-between gap-1.5">
                             <h3
                               onClick={() => setDetailProduct(prod)}
-                              className="text-base font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF]"
+                              className="text-xs sm:text-sm font-semibold text-[#0B192C] cursor-pointer hover:text-[#1E40AF] line-clamp-1"
                             >
                               {prod.name}
                             </h3>
                             <div className="text-right font-tabular shrink-0">
-                              <span className="text-[15px] font-semibold text-[#0B192C]">
+                              <span className="text-xs font-bold text-[#0B192C]">
                                 {formatNaira(effectivePrice)}
                               </span>
-                              {prod.discountPriceNgn && (
-                                <span className="block text-xs text-slate-400 line-through">
-                                  {formatNaira(prod.priceNgn)}
-                                </span>
-                              )}
                             </div>
                           </div>
-                          <p className="text-xs text-slate-500 font-tabular">
-                            Dimensions: {prod.dimensions} · Colours: {cols.join(', ')}
-                          </p>
-                          <p className="text-xs text-slate-600 leading-relaxed">{prod.description}</p>
+                          <p className="text-[11px] text-slate-600 line-clamp-2 leading-snug">{prod.description}</p>
                         </div>
                       </div>
 
-                      <div className="px-6 pb-6 pt-2 space-y-2">
-                        <div className="flex items-center gap-2">
+                      <div className="px-3.5 pb-3.5 pt-1 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => {
@@ -2097,20 +2306,20 @@ export default function App() {
                               setWizardInitialMode('prescription_glasses');
                               setActiveView('wizard');
                             }}
-                            className="flex-1 py-2.5 px-3 bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold rounded-lg cursor-pointer"
+                            className="flex-1 py-1.5 px-2 bg-[#0B192C] hover:bg-[#162B49] text-white text-[11px] font-semibold rounded-lg cursor-pointer truncate"
                           >
-                            Fit Prescription Lenses + Rx
+                            Fit Lenses + Rx
                           </button>
                           <button
                             type="button"
                             onClick={() => setDetailProduct(prod)}
-                            className="py-2.5 px-3.5 border border-slate-300 hover:bg-slate-50 text-[#0B192C] text-xs font-semibold rounded-lg cursor-pointer"
+                            className="py-1.5 px-2 border border-slate-300 hover:bg-slate-50 text-[#0B192C] text-[11px] font-semibold rounded-lg cursor-pointer"
                           >
-                            Quick View
+                            View
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-2 gap-1.5">
                           <button
                             type="button"
                             onClick={() => {
@@ -2133,9 +2342,9 @@ export default function App() {
                                 unitTotalNgn: effectivePrice,
                               });
                             }}
-                            className="py-2 px-2.5 bg-slate-100 hover:bg-slate-200 text-[#0B192C] text-[11px] font-semibold rounded-lg cursor-pointer"
+                            className="py-1 px-1.5 bg-slate-100 hover:bg-slate-200 text-[#0B192C] text-[10px] font-semibold rounded-md cursor-pointer truncate"
                           >
-                            Add AI Glasses Only
+                            AI Only
                           </button>
                           <button
                             type="button"
@@ -2144,9 +2353,9 @@ export default function App() {
                               setWizardInitialMode('protective_glasses');
                               setActiveView('wizard');
                             }}
-                            className="py-2 px-2.5 bg-[#E0F2FE] hover:bg-sky-200 text-[#0B192C] text-[11px] font-semibold rounded-lg cursor-pointer"
+                            className="py-1 px-1.5 bg-[#E0F2FE] hover:bg-sky-200 text-[#0B192C] text-[10px] font-semibold rounded-md cursor-pointer truncate"
                           >
-                            + 0.00 Blue Cut / Sun
+                            + 0.00 Shield
                           </button>
                         </div>
                       </div>
@@ -2209,7 +2418,7 @@ export default function App() {
               ))}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5">
               {products
                 .filter((p) => p.isActive)
                 .filter((p) => {
@@ -2250,30 +2459,35 @@ export default function App() {
                   return (
                     <div
                       key={prod.id}
-                      className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-col justify-between"
+                      className="bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between hover:shadow-md transition-all"
                     >
                       <div>
-                        <div className="aspect-[4/3] bg-[#F4F3EF] overflow-hidden relative">
+                        <div
+                          onClick={() => setDetailProduct(prod)}
+                          className="aspect-[16/10] bg-[#F4F3EF] overflow-hidden relative cursor-pointer"
+                        >
                           <OpticalImage src={imgs[0] || ''} alt={prod.name} className="w-full h-full object-cover" />
                         </div>
-                        <div className="p-6">
-                          <div className="text-xs text-[#1E40AF] font-medium">
-                            0.00 Non-Prescription · {resolvedProtectiveType}
+                        <div className="p-3.5">
+                          <div className="text-[10px] text-[#1E40AF] font-semibold truncate">
+                            0.00 Non-Rx · {resolvedProtectiveType}
                           </div>
-                          <div className="mt-1.5 flex items-baseline justify-between gap-2">
-                            <h3 className="text-base font-semibold text-[#0B192C]">{prod.name}</h3>
-                            <span className="text-[15px] font-tabular font-semibold text-[#0B192C]">
+                          <div className="mt-1 flex items-baseline justify-between gap-1.5">
+                            <h3
+                              onClick={() => setDetailProduct(prod)}
+                              className="text-xs sm:text-sm font-semibold text-[#0B192C] line-clamp-1 cursor-pointer hover:text-[#1E40AF]"
+                            >
+                              {prod.name}
+                            </h3>
+                            <span className="text-xs font-tabular font-bold text-[#0B192C] shrink-0">
                               {formatNaira(protectivePackagePrice)}
                             </span>
                           </div>
-                          <p className="text-xs text-slate-500 mt-1 font-tabular">
-                            Includes {prod.name} Frame + Zero-Power Protective Lenses
-                          </p>
-                          <p className="text-xs text-slate-600 mt-2">{prod.description}</p>
+                          <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">{prod.description}</p>
                         </div>
                       </div>
 
-                      <div className="px-6 pb-6 pt-2 flex items-center gap-2.5">
+                      <div className="px-3.5 pb-3.5 pt-1 flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => {
@@ -2296,9 +2510,9 @@ export default function App() {
                               unitTotalNgn: protectivePackagePrice,
                             });
                           }}
-                          className="w-full py-2.5 px-3 bg-[#0B192C] hover:bg-[#162B49] text-white text-xs font-semibold rounded-lg cursor-pointer"
+                          className="w-full py-1.5 px-2 bg-[#0B192C] hover:bg-[#162B49] text-white text-[11px] font-semibold rounded-lg cursor-pointer"
                         >
-                          Add Non-Rx Pair to Bag
+                          Add Non-Rx Pair
                         </button>
                       </div>
                     </div>
@@ -2328,14 +2542,52 @@ export default function App() {
           <ClinicalAppointmentView
             user={user}
             appointments={appointments}
+            notifications={notifications}
+            orders={orders}
+            prescriptions={savedPrescriptions}
+            enquiries={enquiries}
+            products={products}
+            lensTypes={lensTypes}
+            lensCoatings={lensCoatings}
             siteConfig={siteConfig}
+            onSignIn={handleSignIn}
+            onSignOut={handleSignOut}
+            onOpenFullAccount={() => setActiveView('account')}
+            onAddToCart={handleAddToCart}
+            onSavePrescriptionToAccount={handleSavePrescriptionToAccount}
+            onEmailSessionSignIn={handleEmailSessionSignIn}
+            onUpdateProfile={async (data) => {
+              if (!idToken) return;
+              await fetch('/api/auth/profile', {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${idToken}`,
+                },
+                body: JSON.stringify(data),
+              });
+              await fetchAccountBundle(idToken);
+            }}
+            onSendOrderEnquiry={async (enq) => {
+              await fetch('/api/enquiries', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userUid: user?.uid || '',
+                  customerName: user?.fullName || 'Client',
+                  customerEmail: user?.email || '',
+                  ...enq,
+                }),
+              });
+              if (idToken) await fetchAccountBundle(idToken);
+            }}
             onAppointmentCreated={(created) => {
               setAppointments((prev) => [created, ...prev]);
-              showToast(`Eye Appointment ${created.appointmentNumber} submitted to Doctor.`);
+              showToast(`Eye Appointment ${created.appointmentNumber} submitted. Complete payment for Admin verification.`);
             }}
             onAppointmentUpdated={(updated) => {
               setAppointments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-              showToast('Appointment payment updated.');
+              showToast('Payment reference submitted for Admin verification.');
             }}
           />
         )}
@@ -2348,11 +2600,16 @@ export default function App() {
             prescriptions={savedPrescriptions}
             addresses={savedAddresses}
             wishlistProducts={wishlistProducts}
+            products={products}
+            lensTypes={lensTypes}
+            lensCoatings={lensCoatings}
             notifications={notifications}
             enquiries={enquiries}
             appointments={appointments}
             siteConfig={siteConfig}
             initialTrackedOrderId={accountTrackedOrderId}
+            onAddToCart={handleAddToCart}
+            onSavePrescriptionToAccount={handleSavePrescriptionToAccount}
             onAppointmentCreated={(created) => {
               setAppointments((prev) => [created, ...prev]);
               showToast(`Eye Appointment ${created.appointmentNumber} submitted to Doctor.`);
@@ -2361,6 +2618,7 @@ export default function App() {
               setAppointments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
               showToast('Appointment payment updated.');
             }}
+            onEmailSessionSignIn={handleEmailSessionSignIn}
             onSignIn={handleSignIn}
             onSignOut={handleSignOut}
             onUpdateProfile={async (data) => {
@@ -2481,7 +2739,14 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 space-y-12">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             <div className="space-y-3">
-              <span className="text-xl font-bold text-white font-display tracking-tight">VISION CARE</span>
+              <div className="inline-block bg-white rounded-xl p-2.5 border border-[#C5A059]/50 shadow-sm">
+                <img
+                  src="/assets/aistudio/Vision_Care_Eyewear_Logo_31f9746e.png"
+                  alt="Vision Care Official Logo"
+                  className="h-14 w-auto object-contain"
+                />
+              </div>
+              <span className="block text-xl font-bold text-white font-display tracking-tight">VISION CARE</span>
               <p className="text-xs text-slate-400 leading-relaxed">
                 Premium online optical store & clinical dispensing laboratory. Prescription eyewear, genuine Varilux progressives, Blue Cut screen glasses, and designer frames delivered nationwide across Nigeria.
               </p>

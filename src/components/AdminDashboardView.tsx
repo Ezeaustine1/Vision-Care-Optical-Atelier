@@ -24,6 +24,7 @@ import {
   Video,
   Image as ImageIcon,
   Stethoscope,
+  Star,
 } from 'lucide-react';
 import {
   Product,
@@ -34,6 +35,7 @@ import {
   UserProfile,
   EnquiryRecord,
   ClinicalAppointmentRecord,
+  ReviewItem,
 } from '../types.ts';
 import { formatNaira } from './OpticalImage.tsx';
 import {
@@ -85,9 +87,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [prescriptions, setPrescriptions] = useState<PrescriptionData[]>([]);
   const [customers, setCustomers] = useState<UserProfile[]>([]);
   const [enquiries, setEnquiries] = useState<EnquiryRecord[]>([]);
+  const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [lensTypes, setLensTypes] = useState<LensType[]>([]);
   const [lensCoatings, setLensCoatings] = useState<LensCoating[]>([]);
+  const [newReviewName, setNewReviewName] = useState('');
+  const [newReviewRole, setNewReviewRole] = useState('Verified Patient · Delivered Order');
+  const [newReviewRating, setNewReviewRating] = useState<number>(5);
+  const [newReviewComment, setNewReviewComment] = useState('');
+  const [isSavingReview, setIsSavingReview] = useState(false);
   const [siteConfig, setSiteConfig] = useState<Record<string, any>>({
     heroHeadline: 'See Clearly. Look Beautiful. Live Confidently.',
     heroSubheadline:
@@ -229,7 +237,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [customerPage, setCustomerPage] = useState<number>(1);
 
   const [cmsSubTab, setCmsSubTab] = useState<
-    'headlines_banner' | 'hero_vault' | 'about_me' | 'bank_contact' | 'cpanel_env' | 'all'
+    | 'headlines_banner'
+    | 'hero_vault'
+    | 'about_me'
+    | 'bank_contact'
+    | 'cpanel_env'
+    | 'patient_reviews'
+    | 'all'
   >('headlines_banner');
 
   const fetchAdminData = async () => {
@@ -247,6 +261,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         setPrescriptions(data.prescriptions || []);
         setCustomers(data.users || []);
         setEnquiries(data.enquiries || []);
+        setReviews(data.reviews || []);
         setProducts(data.products || []);
         setLensTypes(data.lensTypes || []);
         setLensCoatings(data.lensCoatings || []);
@@ -1146,6 +1161,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[#0B192C] font-semibold cursor-pointer"
                 >
                   Hero Video / Picture Vault
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSection('cms');
+                    setCmsSubTab('patient_reviews');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[#0B192C] font-semibold cursor-pointer"
+                >
+                  Patient Reviews ({reviews.length})
                 </button>
               </div>
             </div>
@@ -5140,7 +5165,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             type="email"
                             required
                             value={clientEmailTo}
-                            onChange={(e) => setClientEmailTo(e.target.value)}
+                            onChange={(e) => {
+                              const nextEmail = e.target.value;
+                              setClientEmailTo(nextEmail);
+                              const matchedCust = customers.find(
+                                (c) =>
+                                  (c.email || '').trim().toLowerCase() ===
+                                  nextEmail.trim().toLowerCase()
+                              );
+                              setClientEmailUid(matchedCust?.uid || '');
+                              if (matchedCust?.fullName && !clientEmailName) {
+                                setClientEmailName(matchedCust.fullName);
+                              }
+                            }}
                             placeholder="client@gmail.com"
                             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
                           />
@@ -5192,8 +5229,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               },
                               {
                                 label: 'Appointment Follow-Up',
-                                subj: 'Clinical Eye Appointment & Drug Prescription Update',
-                                body: 'Hello,\n\nYour clinical eye assessment and prescription records have been updated by the Doctor. Please sign in to your Vision Care Account to view your clinical details.\n\nWarm regards,\nVision Care Eye Clinic',
+                                subj: 'Clinical Eye Appointment & Attending Doctor Update',
+                                body: 'Hello,\n\nYour clinical eye consultation and therapeutic drug prescription notes have been updated by the Attending Doctor. Please sign in to your Confidential Patient Account to view your doctor notes.\n\nWarm regards,\nVision Care Eye Clinic',
                               },
                             ].map((tpl) => (
                               <button
@@ -5501,6 +5538,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 { id: 'about_me' as const, label: '3. About Me (Doctor Profile)' },
                 { id: 'bank_contact' as const, label: '4. Payment Gateways & Bank Account' },
                 { id: 'cpanel_env' as const, label: '5. Environment Variables (.env & cPanel MySQL)' },
+                {
+                  id: 'patient_reviews' as const,
+                  label: `6. Verified Patient Reviews (${reviews.length})`,
+                },
                 { id: 'all' as const, label: 'Show All CMS Fields' },
               ].map((tab) => (
                 <button
@@ -6362,6 +6403,255 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-white font-tabular"
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* VERIFIED PATIENT OUTCOMES — ADMIN PATIENT REVIEWS CONTROL PANEL */}
+            {(cmsSubTab === 'patient_reviews' || cmsSubTab === 'all') && (
+              <div className="rounded-2xl bg-[#FAF9F6] border border-slate-200 p-5 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                  <div>
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-[#1E40AF]">
+                      Homepage &ldquo;Verified Patient Outcomes&rdquo; Control
+                    </span>
+                    <h4 className="text-base font-semibold text-[#0B192C] mt-0.5">
+                      Patient Reviews Manager ({reviews.length} Reviews)
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Patients who have ordered and received their delivered eyewear (`orderStatus === &apos;Delivered&apos;`) can submit a review on the website. You can approve, hide, edit, add, or delete any patient review here.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Add New Verified Patient Review Form */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 text-xs">
+                  <span className="font-semibold text-[#0B192C] block">
+                    + Add Verified Patient Review (Admin Override)
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <input
+                      type="text"
+                      value={newReviewName}
+                      onChange={(e) => setNewReviewName(e.target.value)}
+                      placeholder="Patient Name (e.g. Tunde Bakare)"
+                      className="border border-slate-300 rounded-lg px-3 py-2"
+                    />
+                    <input
+                      type="text"
+                      value={newReviewRole}
+                      onChange={(e) => setNewReviewRole(e.target.value)}
+                      placeholder="Verified Order Badge (e.g. Verified Patient · Delivered Order)"
+                      className="sm:col-span-2 border border-slate-300 rounded-lg px-3 py-2"
+                    />
+                    <select
+                      value={newReviewRating}
+                      onChange={(e) => setNewReviewRating(Number(e.target.value))}
+                      className="border border-slate-300 rounded-lg px-3 py-2 bg-white font-semibold"
+                    >
+                      <option value={5}>5 Stars (★★★★★)</option>
+                      <option value={4}>4 Stars (★★★★☆)</option>
+                      <option value={3}>3 Stars (★★★☆☆)</option>
+                      <option value={2}>2 Stars (★★☆☆☆)</option>
+                      <option value={1}>1 Star (★☆☆☆☆)</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <input
+                      type="text"
+                      value={newReviewComment}
+                      onChange={(e) => setNewReviewComment(e.target.value)}
+                      placeholder="Write the patient's review comment about their delivered glasses..."
+                      className="flex-1 border border-slate-300 rounded-lg px-3 py-2"
+                    />
+                    <button
+                      type="button"
+                      disabled={isSavingReview || !newReviewName.trim() || !newReviewComment.trim()}
+                      onClick={async () => {
+                        setIsSavingReview(true);
+                        try {
+                          const res = await fetch('/api/admin/reviews', {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                            },
+                            body: JSON.stringify({
+                              customerName: newReviewName.trim(),
+                              customerRole: newReviewRole.trim(),
+                              rating: newReviewRating,
+                              comment: newReviewComment.trim(),
+                              isApproved: true,
+                            }),
+                          });
+                          if (res.ok) {
+                            setNewReviewName('');
+                            setNewReviewComment('');
+                            setStatusMessage('Published new verified patient review to homepage.');
+                            await fetchAdminData();
+                            await onRefreshPublicCatalog();
+                          }
+                        } finally {
+                          setIsSavingReview(false);
+                        }
+                      }}
+                      className="px-4 py-2 bg-[#0B192C] hover:bg-[#162B49] disabled:opacity-50 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-[#C5A059]" />
+                      <span>Publish Review</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Existing Patient Reviews List */}
+                <div className="space-y-2.5">
+                  {reviews.map((rev: any) => {
+                    const isVisible = rev.isApproved !== false;
+                    return (
+                      <div
+                        key={rev.id}
+                        className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs"
+                      >
+                        <div className="flex-1 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              type="text"
+                              value={rev.customerName || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setReviews((prev) =>
+                                  prev.map((item) =>
+                                    item.id === rev.id ? { ...item, customerName: val } : item
+                                  )
+                                );
+                              }}
+                              className="border border-slate-300 rounded px-2.5 py-1 font-semibold text-[#0B192C]"
+                            />
+                            <input
+                              type="text"
+                              value={rev.customerRole || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setReviews((prev) =>
+                                  prev.map((item) =>
+                                    item.id === rev.id ? { ...item, customerRole: val } : item
+                                  )
+                                );
+                              }}
+                              className="flex-1 min-w-[200px] border border-slate-200 rounded px-2.5 py-1 text-slate-600"
+                            />
+                            <select
+                              value={rev.rating || 5}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setReviews((prev) =>
+                                  prev.map((item) =>
+                                    item.id === rev.id ? { ...item, rating: val } : item
+                                  )
+                                );
+                              }}
+                              className="border border-slate-300 rounded px-2 py-1 bg-white font-semibold text-[#C5A059]"
+                            >
+                              {[5, 4, 3, 2, 1].map((n) => (
+                                <option key={n} value={n}>
+                                  {n} ★
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <textarea
+                            rows={2}
+                            value={rev.comment || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setReviews((prev) =>
+                                prev.map((item) =>
+                                  item.id === rev.id ? { ...item, comment: val } : item
+                                )
+                              );
+                            }}
+                            className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-slate-700"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await fetch(`/api/admin/reviews/${rev.id}`, {
+                                method: 'PUT',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                },
+                                body: JSON.stringify({
+                                  customerName: rev.customerName,
+                                  customerRole: rev.customerRole,
+                                  rating: rev.rating,
+                                  comment: rev.comment,
+                                  isApproved: isVisible,
+                                }),
+                              });
+                              setStatusMessage(`Saved changes to ${rev.customerName}'s review.`);
+                              await fetchAdminData();
+                              await onRefreshPublicCatalog();
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-[#1E40AF] hover:bg-blue-800 text-white font-semibold cursor-pointer"
+                          >
+                            Save Edit
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const nextState = !isVisible;
+                              await fetch(`/api/admin/reviews/${rev.id}`, {
+                                method: 'PUT',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                },
+                                body: JSON.stringify({ isApproved: nextState }),
+                              });
+                              setStatusMessage(
+                                nextState
+                                  ? `Approved & displayed ${rev.customerName}'s review on Homepage.`
+                                  : `Hidden ${rev.customerName}'s review from Homepage.`
+                              );
+                              await fetchAdminData();
+                              await onRefreshPublicCatalog();
+                            }}
+                            className={`px-3 py-1.5 rounded-lg font-bold uppercase text-[10px] cursor-pointer ${
+                              isVisible
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : 'bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {isVisible ? '● Visible on Site' : '○ Hidden'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await fetch(`/api/admin/reviews/${rev.id}`, {
+                                method: 'DELETE',
+                                headers: {
+                                  ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+                                },
+                              });
+                              setStatusMessage(`Deleted review by ${rev.customerName}.`);
+                              await fetchAdminData();
+                              await onRefreshPublicCatalog();
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 cursor-pointer"
+                            title="Delete review"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

@@ -1,0 +1,20 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# If you host the PHP + MySQL API on your cPanel domain, uncomment the block below
+# and replace https://your-cpanel-domain.com with your actual cPanel domain:
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://your-cpanel-domain.com/api/:splat"
+#   status = 200
+#   force = true
+
+# SPA fallback so refreshing any page routes cleanly to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

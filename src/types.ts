@@ -183,6 +183,18 @@ export interface ReviewRecord {
   productId: number | null;
   rating: number;
   comment: string;
+  isApproved?: boolean;
+  createdAt: string;
+}
+
+export type ReviewItem = ReviewRecord;
+
+export interface NotificationItem {
+  id: number;
+  userUid: string;
+  title: string;
+  message: string;
+  isRead: boolean;
   createdAt: string;
 }
 

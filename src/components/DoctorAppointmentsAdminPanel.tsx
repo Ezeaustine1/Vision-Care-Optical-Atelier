@@ -16,6 +16,8 @@ import {
   FileText,
   Building2,
   Settings2,
+  Mail,
+  Send,
 } from 'lucide-react';
 import {
   AppointmentChargeOption,
@@ -217,6 +219,55 @@ export const DoctorAppointmentsAdminPanel: React.FC<DoctorAppointmentsAdminPanel
       }
     >
   >({});
+
+  // Direct Doctor/Admin Message to Patient Account & Registered Email
+  const [patientMessageMap, setPatientMessageMap] = useState<Record<number, string>>({});
+  const [sendingMessageId, setSendingMessageId] = useState<number | null>(null);
+
+  const handleConfirmPaymentAndForwardToDoctor = async (apt: ClinicalAppointmentRecord) => {
+    setSavingId(apt.id);
+    try {
+      updateDraftField(apt, { paymentStatus: 'paid' });
+      const res = await fetch(`/api/admin/appointments/${apt.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentStatus: 'paid',
+          status: apt.status === 'pending_review' ? 'assessed_billed' : apt.status,
+        }),
+      });
+      if (res.ok) {
+        onStatusFeedback(
+          `Confirmed payment of ${formatNaira(apt.totalChargeNgn)} for ${apt.patientName} (${apt.appointmentNumber}), forwarded file to Attending Doctor, and notified patient via Account & Email (${apt.patientEmail}).`
+        );
+        await onRefresh();
+      }
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleSendMessageToPatientAccountAndEmail = async (apt: ClinicalAppointmentRecord) => {
+    const msgText = (patientMessageMap[apt.id] || '').trim();
+    if (!msgText) return;
+    setSendingMessageId(apt.id);
+    try {
+      await fetch(`/api/admin/appointments/${apt.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customMessageToPatient: msgText,
+        }),
+      });
+      setPatientMessageMap((prev) => ({ ...prev, [apt.id]: '' }));
+      onStatusFeedback(
+        `Sent clinical message to ${apt.patientName}'s Account Dashboard and registered email (${apt.patientEmail}).`
+      );
+      await onRefresh();
+    } finally {
+      setSendingMessageId(null);
+    }
+  };
 
   const handleSaveAdminTariffAndAccount = async () => {
     setSavingTariff(true);
@@ -845,6 +896,95 @@ export const DoctorAppointmentsAdminPanel: React.FC<DoctorAppointmentsAdminPanel
                       >
                         <Printer className="w-3.5 h-3.5 text-[#1E40AF]" />
                         <span>Print</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Admin Payment Verification Gate Banner */}
+                  <div
+                    className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+                      draft.paymentStatus === 'paid'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                        : draft.paymentStatus === 'pending_verification'
+                        ? 'bg-amber-50 border-amber-300 text-amber-950'
+                        : 'bg-rose-50 border-rose-200 text-rose-950'
+                    }`}
+                  >
+                    <div className="space-y-1">
+                      <div className="font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <CreditCard className="w-3.5 h-3.5" />
+                        <span>
+                          {draft.paymentStatus === 'paid'
+                            ? '✓ Payment Verified by Admin — File Forwarded to Attending Doctor'
+                            : draft.paymentStatus === 'pending_verification'
+                            ? '⏳ Client Submitted Payment Reference — Awaiting Admin Verification'
+                            : '⚠️ Unpaid Booking — Do Not Forward to Doctor Until Payment is Confirmed'}
+                        </span>
+                      </div>
+                      <p className="text-[11px]">
+                        <strong>Bill Amount:</strong> {formatNaira(draft.totalChargeNgn)} ·{' '}
+                        <strong>Method:</strong> {(draft.paymentMethod || 'N/A').toUpperCase()} ·{' '}
+                        <strong>Reference / Teller No:</strong>{' '}
+                        <span className="font-tabular font-semibold">
+                          {draft.paymentReference || 'No reference submitted yet'}
+                        </span>
+                      </p>
+                    </div>
+
+                    {draft.paymentStatus !== 'paid' && (
+                      <button
+                        type="button"
+                        disabled={savingId === activeAppointment.id}
+                        onClick={() => handleConfirmPaymentAndForwardToDoctor(activeAppointment)}
+                        className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-xl flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>Confirm Payment &amp; Forward to Doctor</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Direct Doctor / Admin Message Composer (Sends to Patient Account & Registered Email) */}
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[#0B192C] flex items-center gap-1.5">
+                        <Mail className="w-3.5 h-3.5 text-[#1E40AF]" />
+                        <span>
+                          Send Message to {draft.patientName}&apos;s Account &amp; Registered Email (
+                          {draft.patientEmail})
+                        </span>
+                      </span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        value={patientMessageMap[activeAppointment.id] || ''}
+                        onChange={(e) =>
+                          setPatientMessageMap((prev) => ({
+                            ...prev,
+                            [activeAppointment.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="Type message, appointment instruction, or payment confirmation note for this patient..."
+                        className="flex-1 border border-slate-300 rounded-lg px-3 py-2 bg-white"
+                      />
+                      <button
+                        type="button"
+                        disabled={
+                          sendingMessageId === activeAppointment.id ||
+                          !(patientMessageMap[activeAppointment.id] || '').trim()
+                        }
+                        onClick={() =>
+                          handleSendMessageToPatientAccountAndEmail(activeAppointment)
+                        }
+                        className="px-4 py-2 bg-[#0B192C] hover:bg-[#162B49] disabled:opacity-50 text-white font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <Send className="w-3.5 h-3.5 text-[#C5A059]" />
+                        <span>
+                          {sendingMessageId === activeAppointment.id
+                            ? 'Sending...'
+                            : 'Send to Account & Email'}
+                        </span>
                       </button>
                     </div>
                   </div>

@@ -31,6 +31,10 @@ import {
   deleteLensCoatingById,
   updateSiteConfig,
   createReview,
+  getAllReviews,
+  updateReviewById,
+  deleteReviewById,
+  getUserOrdersWithItems,
   getAllAppointments,
   createAppointmentRecord,
   updateAppointmentByDoctor,
@@ -432,19 +436,18 @@ ${catalogSummary}`,
     }
   });
 
-  // Public & Client Clinical Eye Appointments & Drug Prescriptions
+  // Client Clinical Eye Appointments & Drug Prescriptions (Strictly Confidential per Patient Account)
   app.get('/api/appointments', async (req, res) => {
     try {
-      const all = await getAllAppointments();
-      const { userUid, email, appointmentNumber } = req.query;
-      if (!userUid && !email && !appointmentNumber) {
-        return res.json(all);
-      }
+      const { userUid, email } = req.query;
       const cleanEmail = String(email || '').trim().toLowerCase();
-      const cleanRef = String(appointmentNumber || '').trim().toLowerCase();
       const cleanUid = String(userUid || '').trim();
+      // Never return other patients' medical files when no authenticated patient identity is supplied
+      if (!cleanUid && !cleanEmail) {
+        return res.json([]);
+      }
+      const all = await getAllAppointments();
       const filtered = all.filter((a) => {
-        if (cleanRef && a.appointmentNumber.toLowerCase().includes(cleanRef)) return true;
         if (cleanUid && a.userUid === cleanUid) return true;
         if (cleanEmail && a.patientEmail.trim().toLowerCase() === cleanEmail) return true;
         return false;
@@ -459,6 +462,11 @@ ${catalogSummary}`,
   app.post('/api/appointments', async (req, res) => {
     try {
       const body = req.body || {};
+      if (!body.userUid && !body.patientEmail) {
+        return res.status(401).json({
+          error: 'Please sign in or create a patient account before booking an eye appointment.',
+        });
+      }
       if (!body.patientName || !body.patientPhone || !body.complaintDescription) {
         return res.status(400).json({
           error: 'Please enter your Full Name, Phone Number, and Eye Complaint details.',
@@ -477,7 +485,7 @@ ${catalogSummary}`,
       const updated = await updateAppointmentPaymentByClient(Number(req.params.id), {
         paymentMethod: req.body.paymentMethod || 'paystack',
         paymentReference: req.body.paymentReference || `APT-REF-${Date.now()}`,
-        paymentStatus: req.body.paymentStatus || 'paid',
+        paymentStatus: 'pending_verification',
       });
       res.json(updated);
     } catch (error: any) {
@@ -728,18 +736,57 @@ ${catalogSummary}`,
     }
   });
 
-  // Customer Reviews
+  // Customer Reviews (Permitted for Patients Who Ordered & Received Their Delivered Order)
   app.post('/api/reviews', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user!.uid;
-      const { customerName, customerRole, productId, rating, comment } = req.body;
+      const email = req.user!.email || '';
+      const { customerName, customerRole, productId, rating, comment, orderNumber } = req.body;
+      if (!comment || !String(comment).trim()) {
+        return res.status(400).json({ error: 'Please write your review comment before submitting.' });
+      }
+
+      const userOrders = await getUserOrdersWithItems(uid, email);
+      const deliveredOrders = userOrders.filter(
+        (o) => String(o.orderStatus || '').toLowerCase() === 'delivered'
+      );
+
+      if (deliveredOrders.length === 0) {
+        return res.status(403).json({
+          error:
+            'Only patients who have ordered and received their delivered eyewear order are permitted to post a verified patient review.',
+        });
+      }
+
+      const matchedOrder =
+        (orderNumber &&
+          deliveredOrders.find(
+            (o) => o.orderNumber.toLowerCase() === String(orderNumber).trim().toLowerCase()
+          )) ||
+        deliveredOrders[0];
+
+      const firstItemName = matchedOrder?.items?.[0]?.productName || 'Prescription Eyewear';
+      const verifiedBadgeRole =
+        customerRole && String(customerRole).trim()
+          ? String(customerRole).trim()
+          : `Verified Patient · Delivered Order ${matchedOrder.orderNumber} (${firstItemName})`;
+
       const created = await createReview({
         userUid: uid,
-        customerName: customerName || req.user!.name || 'Verified Patient',
-        customerRole: customerRole || 'Verified Vision Care Client',
-        productId: productId ? Number(productId) : null,
-        rating: Number(rating || 5),
-        comment,
+        customerName:
+          (customerName && String(customerName).trim()) ||
+          matchedOrder?.customerName ||
+          req.user!.name ||
+          'Verified Patient',
+        customerRole: verifiedBadgeRole,
+        productId: productId
+          ? Number(productId)
+          : matchedOrder?.items?.[0]?.productId
+          ? Number(matchedOrder.items[0].productId)
+          : null,
+        rating: Math.min(5, Math.max(1, Number(rating || 5))),
+        comment: String(comment).trim(),
+        isApproved: true,
       });
       res.json(created);
     } catch (error: any) {
@@ -748,18 +795,81 @@ ${catalogSummary}`,
     }
   });
 
+  // Admin Reviews Management Endpoints
+  app.post('/api/admin/reviews', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const body = req.body || {};
+      if (!body.customerName || !body.comment) {
+        return res.status(400).json({ error: 'Patient name and review comment are required.' });
+      }
+      const created = await createReview({
+        userUid: body.userUid || req.user!.uid || 'admin-verified',
+        customerName: String(body.customerName).trim(),
+        customerRole:
+          String(body.customerRole || '').trim() || 'Verified Vision Care Patient (Delivered Order)',
+        productId: body.productId ? Number(body.productId) : null,
+        rating: Math.min(5, Math.max(1, Number(body.rating || 5))),
+        comment: String(body.comment).trim(),
+        isApproved: body.isApproved !== undefined ? Boolean(body.isApproved) : true,
+      });
+      res.json(created);
+    } catch (error: any) {
+      console.error('Error creating review by admin:', error);
+      res.status(500).json({ error: error.message || 'Failed to create patient review' });
+    }
+  });
+
+  app.put('/api/admin/reviews/:id', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const body = req.body || {};
+      const patch: Record<string, any> = {};
+      if (body.customerName !== undefined) patch.customerName = String(body.customerName).trim();
+      if (body.customerRole !== undefined) patch.customerRole = String(body.customerRole).trim();
+      if (body.rating !== undefined)
+        patch.rating = Math.min(5, Math.max(1, Number(body.rating || 5)));
+      if (body.comment !== undefined) patch.comment = String(body.comment).trim();
+      if (body.isApproved !== undefined) patch.isApproved = Boolean(body.isApproved);
+      if (body.productId !== undefined)
+        patch.productId = body.productId ? Number(body.productId) : null;
+
+      const updated = await updateReviewById(Number(req.params.id), patch);
+      res.json(updated);
+    } catch (error: any) {
+      console.error('Error updating review by admin:', error);
+      res.status(500).json({ error: error.message || 'Failed to update patient review' });
+    }
+  });
+
+  app.delete('/api/admin/reviews/:id', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const deleted = await deleteReviewById(Number(req.params.id));
+      res.json(deleted);
+    } catch (error: any) {
+      console.error('Error deleting review by admin:', error);
+      res.status(500).json({ error: error.message || 'Failed to delete patient review' });
+    }
+  });
+
   // Admin Dashboard Overview & Management Endpoints
   app.get('/api/admin/overview', requireAuth, async (_req: AuthRequest, res) => {
     try {
-      const [ordersList, prescriptionsList, usersList, enquiriesList, appointmentsList, catalog] =
-        await Promise.all([
-          getAllOrdersWithItems(),
-          getAllPrescriptions(),
-          getAllUsers(),
-          getAllEnquiries(),
-          getAllAppointments(),
-          getCatalogBootstrap(),
-        ]);
+      const [
+        ordersList,
+        prescriptionsList,
+        usersList,
+        enquiriesList,
+        appointmentsList,
+        reviewsList,
+        catalog,
+      ] = await Promise.all([
+        getAllOrdersWithItems(),
+        getAllPrescriptions(),
+        getAllUsers(),
+        getAllEnquiries(),
+        getAllAppointments(),
+        getAllReviews(),
+        getCatalogBootstrap(),
+      ]);
 
       res.json({
         orders: ordersList,
@@ -767,6 +877,7 @@ ${catalogSummary}`,
         users: usersList,
         enquiries: enquiriesList,
         appointments: appointmentsList,
+        reviews: reviewsList,
         products: catalog.products,
         lensTypes: catalog.lensTypes,
         lensCoatings: catalog.lensCoatings,

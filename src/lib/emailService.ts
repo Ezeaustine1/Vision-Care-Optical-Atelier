@@ -71,7 +71,11 @@ export function buildOrderTrackingUrl(orderNumber?: string, baseUrl?: string): s
   if (!orderNumber) {
     return `${root}/?view=account`;
   }
-  return `${root}/?view=account&trackOrder=${encodeURIComponent(orderNumber)}`;
+  const cleanRef = orderNumber.trim();
+  if (cleanRef.toUpperCase().startsWith('VC-APT-') || cleanRef.toUpperCase().startsWith('APT-')) {
+    return `${root}/?view=appointments`;
+  }
+  return `${root}/?view=account&trackOrder=${encodeURIComponent(cleanRef)}`;
 }
 
 export function buildGmailComposeUrl(toEmail: string, subject: string, bodyText: string): string {
@@ -104,6 +108,7 @@ function escapePdfText(input: string): string {
 /**
  * Generates a valid, self-contained PDF Buffer containing the client's
  * Optical Lens Prescription & Bespoke Eyewear Specifications for email attachment.
+ * Only called when the client actually placed an Eyewear / Glasses order.
  */
 export function generateLensPrescriptionPdfBuffer(
   payload: OutboundEmailPayload
@@ -337,14 +342,27 @@ function buildClinicalHtmlEmail(
     .replace(/>/g, '&gt;')
     .replace(/\n/g, '<br />');
 
+  const ord = payload.orderDetails;
+  const hasEyewearOrder = Boolean(ord && Array.isArray(ord.items) && ord.items.length > 0);
+  const refStr = String(ord?.orderNumber || payload.orderNumber || '').trim();
+  const isAppointmentEmail =
+    !hasEyewearOrder &&
+    (refStr.toUpperCase().startsWith('VC-APT-') ||
+      refStr.toUpperCase().startsWith('APT-') ||
+      payload.subject.toLowerCase().includes('appointment') ||
+      payload.subject.toLowerCase().includes('doctor') ||
+      payload.subject.toLowerCase().includes('drug'));
+
   const trackingUrl =
     payload.trackingUrl ||
-    buildOrderTrackingUrl(payload.orderDetails?.orderNumber || payload.orderNumber);
-
-  const ord = payload.orderDetails;
+    (hasEyewearOrder
+      ? buildOrderTrackingUrl(ord?.orderNumber || payload.orderNumber)
+      : isAppointmentEmail
+      ? `${DEFAULT_APP_URL.replace(/\/+$/, '')}/?view=appointments`
+      : `${DEFAULT_APP_URL.replace(/\/+$/, '')}/?view=account`);
 
   const orderItemsHtml =
-    ord && Array.isArray(ord.items) && ord.items.length > 0
+    hasEyewearOrder && ord
       ? `
       <div style="margin-top:22px;">
         <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#0B192C;border-bottom:2px solid #0B192C;padding-bottom:6px;margin-bottom:14px;">
@@ -504,7 +522,7 @@ function buildClinicalHtmlEmail(
                   <tr>
                     <td>
                       <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#C5A059;font-weight:700;">
-                        ${fromName} · Clinical Optical Concierge
+                        ${fromName} · ${isAppointmentEmail ? 'Eye Clinic &amp; Doctor Portal' : 'Clinical Optical Concierge'}
                       </div>
                       <div style="font-size:20px;font-weight:700;margin-top:6px;color:#FFFFFF;line-height:1.3;">
                         ${payload.subject}
@@ -537,23 +555,35 @@ function buildClinicalHtmlEmail(
                 ${orderItemsHtml}
 
                 ${
-                  ord
+                  hasEyewearOrder
                     ? `<div style="margin-top:16px;padding:12px 16px;background-color:#EFF6FF;border:1px solid #BFDBFE;border-radius:10px;font-size:12px;color:#1E3A8A;">
                         <strong>Attached Document:</strong> Your official <em>Vision Care Clinical Lens Prescription &amp; Order Dossier (PDF)</em> is attached to this email for your personal optical records.
                       </div>`
                     : ''
                 }
 
-                <!-- Direct Account & Live Order Tracking CTA -->
+                <!-- Direct Account CTA -->
                 <div style="margin-top:24px;margin-bottom:10px;text-align:center;padding:20px;background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;">
                   <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#1E40AF;margin-bottom:6px;">
-                    9-Stage Live Optical Laboratory Tracking
+                    ${
+                      hasEyewearOrder
+                        ? '9-Stage Live Optical Laboratory Tracking'
+                        : 'Confidential Patient Account &amp; Eye Clinic Portal'
+                    }
                   </div>
                   <div style="font-size:13px;color:#475569;margin-bottom:16px;">
-                    Click the button below to open your Vision Care Client Account and track your eyewear order in real time:
+                    ${
+                      hasEyewearOrder
+                        ? 'Click the button below to open your Vision Care Client Account and track your eyewear order in real time:'
+                        : 'Click the button below to sign in to your confidential Vision Care Account to view your appointment updates and Doctor messages:'
+                    }
                   </div>
                   <a href="${trackingUrl}" target="_blank" rel="noreferrer" style="display:inline-block;background-color:#0B192C;color:#FFFFFF;font-size:13px;font-weight:700;text-decoration:none;padding:13px 26px;border-radius:10px;border:1px solid #C5A059;">
-                    Track Your Order in Vision Care Account →
+                    ${
+                      hasEyewearOrder
+                        ? 'Track Your Order in Vision Care Account →'
+                        : 'Open My Confidential Vision Care Account →'
+                    }
                   </a>
                   <div style="margin-top:10px;font-size:11px;color:#64748B;word-break:break-all;">
                     Direct Link: <a href="${trackingUrl}" style="color:#1E40AF;text-decoration:underline;">${trackingUrl}</a>
@@ -593,11 +623,19 @@ export async function dispatchClientEmail(payload: OutboundEmailPayload): Promis
     'concierge@visioncare.ng';
   const sentAt = new Date().toISOString();
 
+  const hasEyewearOrder = Boolean(
+    payload.orderDetails &&
+      Array.isArray(payload.orderDetails.items) &&
+      payload.orderDetails.items.length > 0
+  );
+
   const trackingUrl =
     payload.trackingUrl ||
     buildOrderTrackingUrl(payload.orderDetails?.orderNumber || payload.orderNumber);
 
-  const fullPlainTextBody = `${payload.bodyText}\n\nTrack Your Order in Vision Care Account:\n${trackingUrl}`;
+  const fullPlainTextBody = hasEyewearOrder
+    ? `${payload.bodyText}\n\nTrack Your Order in Vision Care Account:\n${trackingUrl}`
+    : `${payload.bodyText}\n\nOpen Your Confidential Vision Care Account:\n${trackingUrl}`;
 
   const gmailComposeUrl = buildGmailComposeUrl(cleanTo, payload.subject, fullPlainTextBody);
   const mailtoUrl = buildMailtoUrl(cleanTo, payload.subject, fullPlainTextBody);

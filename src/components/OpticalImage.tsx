@@ -11,6 +11,21 @@ export const formatNaira = (amount: number): string => {
   return `₦${Math.round(amount || 0).toLocaleString('en-NG')}`;
 };
 
+export const parseFirstImage = (imagesJson?: string): string => {
+  if (!imagesJson) return '/src/assets/images/prod_1.jpg';
+  try {
+    const parsed = JSON.parse(imagesJson);
+    if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
+      return parsed[0];
+    }
+  } catch {
+    if (imagesJson.startsWith('http') || imagesJson.startsWith('/') || imagesJson.startsWith('data:')) {
+      return imagesJson;
+    }
+  }
+  return '/src/assets/images/prod_1.jpg';
+};
+
 export const OpticalImage: React.FC<OpticalImageProps> = ({ src, alt, className = '' }) => {
   const [hasError, setHasError] = useState(false);
 

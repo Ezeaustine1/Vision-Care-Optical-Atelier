@@ -40,6 +40,9 @@ import {
   Product,
   EnquiryRecord,
   ClinicalAppointmentRecord,
+  LensType,
+  LensCoating,
+  CartItem,
 } from '../types.ts';
 import { OpticalImage, formatNaira } from './OpticalImage.tsx';
 import { OrderTrackingTimeline, OPTICAL_ORDER_STAGES } from './OrderTrackingTimeline.tsx';
@@ -53,13 +56,34 @@ interface CustomerAccountViewProps {
   prescriptions: PrescriptionData[];
   addresses: AddressRecord[];
   wishlistProducts: Product[];
-  notifications: Array<{ id: number; title: string; message: string; isRead: boolean; createdAt: string }>;
+  products?: Product[];
+  lensTypes?: LensType[];
+  lensCoatings?: LensCoating[];
+  notifications: Array<{ id: number; userUid?: string; title: string; message: string; isRead: boolean; createdAt: string }>;
   enquiries: EnquiryRecord[];
   appointments?: ClinicalAppointmentRecord[];
   siteConfig?: Record<string, any>;
   initialTrackedOrderId?: number | null;
+  initialActiveTab?:
+    | 'tracking'
+    | 'orders'
+    | 'appointments'
+    | 'prescriptions'
+    | 'wishlist'
+    | 'addresses'
+    | 'notifications'
+    | 'support'
+    | 'profile';
   onAppointmentCreated?: (created: ClinicalAppointmentRecord) => void;
   onAppointmentUpdated?: (updated: ClinicalAppointmentRecord) => void;
+  onAddToCart?: (item: CartItem, openCheckoutAfter?: boolean) => void;
+  onSavePrescriptionToAccount?: (rx: PrescriptionData) => Promise<void>;
+  onEmailSessionSignIn?: (payload: {
+    email: string;
+    password?: string;
+    fullName?: string;
+    mode?: 'customer' | 'admin';
+  }) => Promise<void>;
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onUpdateProfile: (data: { fullName: string; phone: string }) => Promise<void>;
@@ -79,13 +103,20 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
   prescriptions,
   addresses,
   wishlistProducts,
+  products = [],
+  lensTypes = [],
+  lensCoatings = [],
   notifications,
   enquiries,
   appointments = [],
   siteConfig = {},
   initialTrackedOrderId = null,
+  initialActiveTab = 'tracking',
   onAppointmentCreated = () => {},
   onAppointmentUpdated = () => {},
+  onAddToCart,
+  onSavePrescriptionToAccount,
+  onEmailSessionSignIn,
   onSignIn,
   onSignOut,
   onUpdateProfile,
@@ -97,12 +128,24 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<
     'tracking' | 'orders' | 'appointments' | 'prescriptions' | 'wishlist' | 'addresses' | 'notifications' | 'support' | 'profile'
-  >('tracking');
+  >(initialActiveTab);
   const [trackedOrderId, setTrackedOrderId] = useState<number | null>(
     initialTrackedOrderId || (orders.length > 0 ? orders[0].id : null)
   );
   const [selectedAnalyticsYear, setSelectedAnalyticsYear] = useState<number>(new Date().getFullYear());
   const [showAnalyticsPanel, setShowAnalyticsPanel] = useState<boolean>(true);
+  const [authMode, setAuthMode] = useState<'register' | 'login'>('register');
+  const [authFullName, setAuthFullName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPhone, setAuthPhone] = useState('+234 ');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+
+  useEffect(() => {
+    if (initialActiveTab) {
+      setActiveTab(initialActiveTab);
+    }
+  }, [initialActiveTab]);
 
   useEffect(() => {
     if (initialTrackedOrderId) {
@@ -214,22 +257,147 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
 
   if (!user) {
     return (
-      <div className="max-w-3xl mx-auto px-4 py-16 text-center space-y-6">
-        <div className="bg-white border border-slate-200 rounded-2xl p-10 shadow-xs space-y-5">
-          <User className="w-12 h-12 text-[#1E40AF] mx-auto" />
-          <h1 className="text-3xl font-semibold text-[#0B192C]">
-            Vision Care Client Account & Optical Vault
-          </h1>
-          <p className="text-sm text-slate-600 max-w-lg mx-auto leading-relaxed">
-            Sign in to access your saved optical prescriptions, real-time 9-stage laboratory order tracking, downloadable receipts, saved frames, and priority optometrist support.
-          </p>
-          <button
-            type="button"
-            onClick={onSignIn}
-            className="px-6 py-3.5 bg-[#0B192C] hover:bg-[#162B49] text-white text-sm font-semibold rounded-xl transition-colors"
+      <div className="max-w-5xl mx-auto px-4 py-12 space-y-6">
+        <div className="bg-white border-2 border-[#1E40AF]/20 rounded-2xl p-6 sm:p-10 shadow-xs space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+            <div className="space-y-1">
+              <span className="text-xs font-semibold uppercase tracking-widest text-[#1E40AF]">
+                Vision Care Patient Account &amp; Optical Vault
+              </span>
+              <h1 className="text-2xl sm:text-3xl font-semibold text-[#0B192C]">
+                {authMode === 'register'
+                  ? 'Create Your Patient Account'
+                  : 'Log In to Your Patient Account'}
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-600 max-w-2xl">
+                Access your eye doctor appointments, confidential Drug Prescriptions (PDF), Doctor/Admin messages, 9-stage laboratory order tracking, saved optical prescriptions, and downloadable invoices.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setAuthMode('register')}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  authMode === 'register'
+                    ? 'bg-[#0B192C] text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                Create Account
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthMode('login')}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  authMode === 'login'
+                    ? 'bg-[#0B192C] text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                Log In
+              </button>
+            </div>
+          </div>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!authEmail.trim()) return;
+              setIsAuthenticating(true);
+              try {
+                if (onEmailSessionSignIn) {
+                  await onEmailSessionSignIn({
+                    email: authEmail.trim().toLowerCase(),
+                    password: authPassword,
+                    fullName: authFullName.trim() || authEmail.split('@')[0],
+                    mode: 'customer',
+                  });
+                } else {
+                  await onSignIn();
+                }
+              } finally {
+                setIsAuthenticating(false);
+              }
+            }}
+            className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs"
           >
-            Sign In / Register with Google
-          </button>
+            {authMode === 'register' && (
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Patient Full Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={authFullName}
+                  onChange={(e) => setAuthFullName(e.target.value)}
+                  placeholder="e.g. Chinedu Eze"
+                  className="w-full border border-slate-300 rounded-xl px-3.5 py-2.5"
+                />
+              </div>
+            )}
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Registered Email Address *
+              </label>
+              <input
+                type="email"
+                required
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                placeholder="patient@example.com"
+                className="w-full border border-slate-300 rounded-xl px-3.5 py-2.5"
+              />
+            </div>
+            {authMode === 'register' && (
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Phone / WhatsApp Number *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={authPhone}
+                  onChange={(e) => setAuthPhone(e.target.value)}
+                  placeholder="+234 803 000 0000"
+                  className="w-full border border-slate-300 rounded-xl px-3.5 py-2.5 font-tabular"
+                />
+              </div>
+            )}
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Account Password *
+              </label>
+              <input
+                type="password"
+                required
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                placeholder="Enter password..."
+                className="w-full border border-slate-300 rounded-xl px-3.5 py-2.5"
+              />
+            </div>
+            <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-3 pt-2">
+              <button
+                type="submit"
+                disabled={isAuthenticating}
+                className="px-6 py-3 bg-[#0B192C] hover:bg-[#162B49] text-white text-xs sm:text-sm font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                {isAuthenticating
+                  ? 'Opening Account...'
+                  : authMode === 'register'
+                  ? 'Create Patient Account & Continue →'
+                  : 'Log In to My Patient Account →'}
+              </button>
+              <button
+                type="button"
+                onClick={onSignIn}
+                className="text-xs font-semibold text-[#1E40AF] hover:underline cursor-pointer"
+              >
+                Open Quick Sign-In Modal →
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     );
@@ -1020,20 +1188,62 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
             </div>
           </div>
 
-          {notifications.length === 0 ? (
+          {notifications.filter((n) => {
+            if (!user) return false;
+            const cleanEmail = (user.email || '').trim().toLowerCase();
+            const cleanUid = (user.uid || '').trim();
+            const emailMatch = String(n.message || '').match(/\[Delivered to Email:\s*([^\]]+)\]/i);
+            if (emailMatch && emailMatch[1]) {
+              const tagEmail = emailMatch[1].trim().toLowerCase();
+              if (cleanEmail && tagEmail !== cleanEmail) return false;
+            }
+            if (n.userUid) {
+              const nUid = String(n.userUid).trim();
+              if (cleanUid && nUid === cleanUid) return true;
+              if (cleanEmail && nUid.toLowerCase() === `email:${cleanEmail}`) return true;
+              return false;
+            }
+            return true;
+          }).length === 0 ? (
             <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-xs text-slate-500">
-              No emails or notifications yet. Messages sent by the Admin to {user.email}, instant transfer receipts, lens prescription PDFs, and optometrist verification alerts appear here.
+              No emails or notifications yet. Messages sent by the Admin or Attending Doctor to {user.email} appear exclusively here in your private account.
             </div>
           ) : (
-            notifications.map((n) => {
+            notifications
+              .filter((n) => {
+                if (!user) return false;
+                const cleanEmail = (user.email || '').trim().toLowerCase();
+                const cleanUid = (user.uid || '').trim();
+                const emailMatch = String(n.message || '').match(/\[Delivered to Email:\s*([^\]]+)\]/i);
+                if (emailMatch && emailMatch[1]) {
+                  const tagEmail = emailMatch[1].trim().toLowerCase();
+                  if (cleanEmail && tagEmail !== cleanEmail) return false;
+                }
+                if (n.userUid) {
+                  const nUid = String(n.userUid).trim();
+                  if (cleanUid && nUid === cleanUid) return true;
+                  if (cleanEmail && nUid.toLowerCase() === `email:${cleanEmail}`) return true;
+                  return false;
+                }
+                return true;
+              })
+              .map((n) => {
               const isPriceDrop =
                 n.title.toLowerCase().includes('price-drop') ||
                 n.title.toLowerCase().includes('price drop') ||
                 n.title.toLowerCase().includes('wishlist');
 
-              const orderMatchRegex = /VC-\d{6}-\d{3}/i;
-              const matchedOrderNumber =
-                (n.title.match(orderMatchRegex) || n.message.match(orderMatchRegex) || [])[0] || '';
+              const isAppointmentMsg =
+                /VC-APT-|APT-/i.test(n.title) ||
+                /VC-APT-|APT-/i.test(n.message) ||
+                n.title.toLowerCase().includes('appointment') ||
+                n.title.toLowerCase().includes('attending doctor') ||
+                n.title.toLowerCase().includes('drug prescription');
+
+              const orderMatchRegex = /VC-(?!APT-)\d{6}-\d{3}/i;
+              const matchedOrderNumber = isAppointmentMsg
+                ? ''
+                : (n.title.match(orderMatchRegex) || n.message.match(orderMatchRegex) || [])[0] || '';
               const matchedOrder = matchedOrderNumber
                 ? orders.find(
                     (o) => o.orderNumber.toLowerCase() === matchedOrderNumber.toLowerCase()
@@ -1044,6 +1254,9 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
               const recipientEmail = deliveredEmailMatch ? deliveredEmailMatch[1].trim() : user.email;
 
               const cleanBodyLines = n.message
+                .replace(/\s*\[Delivered to Email:\s*[^\]]+\]/gi, '')
+                .replace(/\s*\[PRESCRIPTION_SUMMARY:\s*[^\]]+\]/gi, '')
+                .replace(/\s*\[ORDER_PRODUCT_IMAGES:\s*[^\]]+\]/gi, '')
                 .split('\n')
                 .filter(
                   (line) =>
@@ -1066,12 +1279,16 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
                       <span className="px-2 py-0.5 rounded bg-[#C5A059] text-[#0B192C] text-[10px] font-bold uppercase tracking-wider">
                         {isPriceDrop
                           ? 'Wishlist Price Drop'
+                          : isAppointmentMsg
+                          ? 'Eye Clinic & Doctor Message'
                           : matchedOrder
                           ? 'Official Order & Rx Dispatch'
                           : 'Vision Care Official Email'}
                       </span>
                       <span className="text-xs font-semibold text-slate-200">
-                        VISION CARE OPTICAL ATELIER &amp; CLINICAL DISPENSING LAB
+                        {isAppointmentMsg
+                          ? 'VISION CARE EYE CLINIC & ATTENDING DOCTOR DESK'
+                          : 'VISION CARE OPTICAL ATELIER & CLINICAL DISPENSING LAB'}
                       </span>
                     </div>
                     <span className="text-[11px] text-slate-300 font-tabular">
@@ -1444,7 +1661,22 @@ export const CustomerAccountView: React.FC<CustomerAccountViewProps> = ({
           <ClinicalAppointmentView
             user={user}
             appointments={appointments}
+            notifications={notifications as any}
+            orders={orders}
+            prescriptions={prescriptions}
+            enquiries={enquiries}
+            products={products}
+            lensTypes={lensTypes}
+            lensCoatings={lensCoatings}
             siteConfig={siteConfig}
+            embeddedInAccount={true}
+            onSignIn={onSignIn}
+            onSignOut={onSignOut}
+            onUpdateProfile={onUpdateProfile}
+            onAddToCart={onAddToCart}
+            onSavePrescriptionToAccount={onSavePrescriptionToAccount}
+            onSendOrderEnquiry={onSendOrderEnquiry}
+            onEmailSessionSignIn={onEmailSessionSignIn}
             onAppointmentCreated={onAppointmentCreated}
             onAppointmentUpdated={onAppointmentUpdated}
           />
